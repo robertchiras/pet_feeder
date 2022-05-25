@@ -22,6 +22,11 @@ RTC_DS1307 rtc;
 #include "Logger.h"
 #include "web_page.h"
 
+// Required for LIGHT_SLEEP_T delay mode
+extern "C" {
+#include "user_interface.h"
+}
+
 #define DOG_FEEDER
 #define VERTICAL_FEEDER
 
@@ -29,17 +34,24 @@ RTC_DS1307 rtc;
 #define SERVO_STOP 90
 
 #ifdef VERTICAL_FEEDER
-#define SERVO_MOVE_FW 150
+// Vertical feeder: with paddles
+// Forward speed (range: 100-180 for 0% - 100%)
+#define SERVO_MOVE_FW 140
+// Backward speed (range: 0-80 for 100% - 0%)
 #define SERVO_MOVE_BW 0
 #ifdef DOG_FEEDER
-#define GRT (70)
+#define GRT (60)
 #elif CAT_FEEDER
+// Not tested yet!
 #define GRT (220)
 #else
 #define GRT (220)
 #endif
 #else
+// Horizontal feeder: with auger
+// Forward speed (range: 0 - 80 for 100% - 0%)
 #define SERVO_MOVE_FW 0
+// Backward speed (range: 100 - 180 for 0% - 100%)
 #define SERVO_MOVE_BW 180
 #ifdef DOG_FEEDER
 #define GRT (45)
@@ -51,21 +63,14 @@ RTC_DS1307 rtc;
 #endif
 
 #define MAP_GRAMS(g) ((GRT + g_data.calibration) * g)
- 
-// Required for LIGHT_SLEEP_T delay mode
-extern "C" {
-#include "user_interface.h"
-}
 
 #define FPM_SLEEP_MAX_TIME           0xFFFFFFF
 #define MAX_UINT      0x7fffffff
 #define HR_SEC        3600
 #define HOURS(x)      ((x) * HR_SEC)
 #define NTP_REFRESH (HOURS(1) * 1000)
-//#define NTP_REFRESH (30 * 1000) // for debugging
 
 #define WIFI_TIMEOUT  30
-//#define SLEEP_SECS    30
 #define SLEEP_SECS    HOURS(2)
 #define MODEM_SLEEP 1
 
@@ -100,6 +105,7 @@ bool first_boot = false;
 bool time_updated = false;
 bool haveScale = false;
 bool haveRTC = false;
+bool i2cReset = false;
 u64 rtcMillis; // Elapsed millis from boot until we got the actual time
 time_t rtcTime; // actual NTP/RTC time
 u64 rtcUptime; // Elapsed millis since we got time from NTP or RTC
@@ -112,20 +118,21 @@ const u8 pin_led_status = D6;
 const u8 pin_btn_control = D7;
 const u8 pin_ctrl_mux = D8;
 
-//#define ADC_MV 1000.0f // ADC range is 0-1V
-//#define ADC_MV_STEP (ADC_MV / 1024)
-//#define ADC_DIV (100.0f / 320) // we have a 220k/100k voltage divider at ADC input
-//#define BAT_DIV (1.0f / 3.22f) // voltage divider of 2.2k/1k at battery input
-//#define BAT_DIV (200.0f / 530.0f) // voltage divider of 330k/200k at battery input
-#define BAT_DIV 0.293f
+
+//#define BAT_DIV (100.0f / 300.0f) // voltage divider of 200k/100k at battery input
+/*
+ * The voltage divider is not actually 1/3 (0.33), because the more we increase the
+ * resistor values, the more the voltage drops. So, just measure the input with a 
+ * voltmeter and get the actual value to be used. Here, we got 0.2812
+ */
+#define BAT_DIV 0.2812f
 #define ADC_READS 5
 const u8 pin_ctrl_adc = A0;
 
 ButtonManager *button;
 bool buttonWake = false;
-// create pin controller with 2 pins
-PinControl pinCtrl(2);
-//DeviceState state(&pinCtrl, pin_led_status, pin_led_power);
+// create pin controller with 1 pin (status led)
+PinControl pinCtrl(1);
 DeviceState state(&pinCtrl, pin_led_status);
 Servo servo;
 
@@ -169,13 +176,14 @@ typedef enum {
 } SleepType;
 
 typedef enum {
+  BATTERY_UNKNOWN,
   BATTERY_ABSENT,
   BATTERY_GOOD,
   BATTERY_LOW,
   BATTERY_VERY_LOW,
 } BatteryState;
-
-BatteryState batState = BATTERY_ABSENT;
+BatteryState batState = BATTERY_UNKNOWN;
+u64 lastBatRead = 0; // millis timestamp of last battery voltage reading
 
 #define MAX_JOBS 6 // up to 6 feeds per day
 typedef struct {
@@ -206,6 +214,8 @@ u64 lastTurnMillis;
 u64 lastStallMillis;
 u32 lastRunDuration;
 u8 stallCheckNum;
+// Stall current in mili-amps (this will be smaller for smaller angular speeds)
+u16 servoStallCurrent = 700;
 
 // job trigger informatio
 typedef enum {
@@ -223,13 +233,14 @@ bool updateRTC() {
   if (!haveRTC)
     return false;
 
-  // Reset i2c lines
-  digitalWrite(LOADCELL_DOUT_PIN, LOW);
-  digitalWrite(LOADCELL_SCK_PIN, LOW);
+  if (i2cReset) {
+    reset_i2c();
   
-  if (!rtc.begin()) {
-    LOG(1, "RTC probe failed in update!\n");
-    return false;
+    if (!rtc.begin()) {
+      LOG(1, "RTC probe failed in update!\n");
+      return false;
+    }
+    i2cReset = false;
   }
 
   if (!rtc.isrunning())
@@ -245,6 +256,26 @@ bool updateRTC() {
         rtc_time.day(), rtc_time.month(), rtc_time.year(),
         rtc_time.hour(), rtc_time.minute(), rtc_time.second());
   
+  return true;
+}
+
+bool sleepRTC() {
+  if (!haveRTC)
+    return false;
+
+  if (i2cReset) {
+    // Reset i2c lines
+    digitalWrite(LOADCELL_DOUT_PIN, LOW);
+    digitalWrite(LOADCELL_SCK_PIN, LOW);
+  
+    if (!rtc.begin()) {
+      LOG(1, "RTC probe failed in sleep!\n");
+      return false;
+    }
+  }
+
+  rtc.writeSqwPinMode(DS1307_ON);
+
   return true;
 }
 
@@ -284,11 +315,14 @@ time_t getCurrentTime(bool useNtp = false) {
       rtcMillis = millis();
       time_updated = true;
       if (updateRTC()) {
+        DateTime ntp_time((u32)now);
+        DateTime rtc_time((u32)rtcTime);
         LOG(1, "NTP timestamp: %llu, RTC timestamp: %llu\n", now, rtcTime);
+        LOG(1, "NTP time (%02u/%02u/%u %02u:%02u:%02u) | RTC time (%02u/%02u/%u %02u:%02u:%02u)\n",
+              ntp_time.day(), ntp_time.month(), ntp_time.year(), ntp_time.hour(), ntp_time.minute(), ntp_time.second(),
+              rtc_time.day(), rtc_time.month(), rtc_time.year(), rtc_time.hour(), rtc_time.minute(), rtc_time.second());
         long long diff = now - rtcTime;
-        if (abs(diff) > 60) {
-          DateTime ntp_time((u32)now);
-          DateTime rtc_time((u32)rtcTime);
+        if (abs(diff) > 30) {
           LOG(1, "NTP time (%02u:%02u:%02u %02u/%02u/%u) differs from RTC time (%u:%u:%u %u/%u/%u) with more than 60s. Adjusting RTC!\n",
               ntp_time.hour(), ntp_time.minute(), ntp_time.second(), ntp_time.day(), ntp_time.month(), ntp_time.year(),
               rtc_time.hour(), rtc_time.minute(), rtc_time.second(), rtc_time.day(), rtc_time.month(), rtc_time.year());
@@ -931,6 +965,8 @@ void enter_sleep() {
   sleepNow *= 1000000;
   // Connect D0 to RST to wake up
   pinMode(D0, WAKEUP_PULLUP);
+  sleepRTC();
+  delay(1);
   
   wifi_disconnect();
   unInstallButton(button);
@@ -992,6 +1028,58 @@ void calibrate_load_sell() {
   }
 }
 
+void check_battery() {
+  // Read battery voltage every hour
+  if (batState == BATTERY_ABSENT ||
+      (lastBatRead && (millis() - lastBatRead < HOURS(1) * 1000)))
+    return;
+  
+  // Reading battery voltage
+  digitalWrite(pin_ctrl_stat1, LOW);
+  digitalWrite(pin_ctrl_stat2, HIGH);
+  lastBatRead = millis();
+  u16 adc_val = read_adc();
+  u16 bat_mV = (adc_val * 1.0f) / BAT_DIV;
+  LOG(1, "Battery mV: %u\n", bat_mV);
+  if (bat_mV >= 2500 && bat_mV < 4500) {
+    // We have 1x18650
+    if (bat_mV < 3000) {
+      LOG(1, "1x battery present and very low (%umV)\n", bat_mV);
+      batState = BATTERY_VERY_LOW;
+    } else if (bat_mV < 3200) {
+      LOG(1, "1x battery present and low (%umV)\n", bat_mV);
+      batState = BATTERY_LOW;
+    } else {
+      LOG(1, "1x battery present and in good shape (%umV)\n", bat_mV);
+      batState = BATTERY_GOOD;
+    }
+  } else if (bat_mV >= 5500) {
+    // We have 2x18650
+    if (bat_mV < 6200) {
+      LOG(1, "2x battery present and very low (%umV)\n", bat_mV);
+      batState = BATTERY_VERY_LOW;
+    } else if (bat_mV < 6500) {
+      LOG(1, "2x battery present and low (%umV)\n", bat_mV);
+      batState = BATTERY_LOW;
+    } else {
+      LOG(1, "2x battery present and in good shape (%umV)\n", bat_mV);
+      batState = BATTERY_GOOD;
+    }
+  } else {
+    batState = BATTERY_ABSENT;
+  }
+  digitalWrite(pin_ctrl_stat1, HIGH);
+}
+
+void reset_i2c() {
+  LOG(2, "Resetting i2c lines\n");
+  // Reset i2c lines
+  digitalWrite(LOADCELL_DOUT_PIN, LOW);
+  digitalWrite(LOADCELL_SCK_PIN, LOW);
+  delay(1);
+  i2cReset = true;
+}
+
 void setup() {
   u32 magic_id;
   bool btn_wake = false;
@@ -1024,17 +1112,7 @@ void setup() {
   }
   */
 
-  //Probe RTC
-  haveRTC = rtc.begin();
-  if (haveRTC)
-    LOG(1, "RTC present!\n");
-  else
-    LOG(1, "RTC absent!\n");
-
-  // Reset i2c lines
-  digitalWrite(LOADCELL_DOUT_PIN, LOW);
-  digitalWrite(LOADCELL_SCK_PIN, LOW);
-
+  reset_i2c();
   //Probe HX711 load_cell
   scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
   haveScale = scale.wait_ready_timeout(1000, 100);
@@ -1045,6 +1123,18 @@ void setup() {
     LOG(1, "Scale absent!\n");
   }
   scale.power_down();
+  
+  reset_i2c();
+  //Probe RTC
+  haveRTC = rtc.begin();
+  if (haveRTC) {
+    LOG(1, "RTC present!\n");
+    Ds1307SqwPinMode sq_pin = rtc.readSqwPinMode();
+    LOG(2, "RTC control register: 0x%02X\n", (u8)sq_pin);
+    i2cReset = false;
+  } else {
+    LOG(1, "RTC absent!\n");
+  }
 
   button = installButton(pin_btn_control, BTN_TYPE_MOMENTARY, BTN_PULLUP);
   if (!button) {
@@ -1053,13 +1143,7 @@ void setup() {
     ESP.restart();
   }
 
-  // Reading battery voltage
-  digitalWrite(pin_ctrl_stat1, LOW);
-  digitalWrite(pin_ctrl_stat2, HIGH);
-  u16 adc_val = read_adc();
-  u16 bat_mV = (adc_val * 1.0f) / BAT_DIV;
-  LOG(1, "Battery mV: %u\n", bat_mV);
-  digitalWrite(pin_ctrl_stat1, HIGH);
+  check_battery();
 
   pinCtrl.addPin(pin_led_status, LOW);
 
@@ -1109,6 +1193,12 @@ void setup() {
   rtc_get_lastRun(lastRun);
   rtc_set_magic(RUN_MAGIC_ID);
 
+  // Only tested stall current for 0-40 / 140-180, so will use these by now
+  if (SERVO_MOVE_FW > 100)
+    servoStallCurrent = map(SERVO_MOVE_FW, 140, 180, 400, 700);
+  else
+    servoStallCurrent = map(SERVO_MOVE_FW, 0, 40, 700, 400);
+
   time_t now = getCurrentTime();
   LOG(1, "Wake-ups: %u\n", wake_num);
   LOG(1, "Crashes: %u\n", crash_num);
@@ -1118,6 +1208,7 @@ void setup() {
   LOG(1, "NTP/RTC time: %llu -> %s", rtcTime, ctime(&rtcTime));
   LOG(1, "Current time: %llu -> %s", now, ctime(&now));
   LOG(1, "Sleep type: %d\n", g_data.sleep_type);
+  LOG(1, "Servo stall current: %u\n", servoStallCurrent);
   LOG(1, "Last Run: %02u:%02u\n", lastRun.hh, lastRun.mm);
   LOG(1, "WiFi config: SSID=%s PASS=%s\n", g_data.wifi_ssid, g_data.wifi_pass);
   for (int i = 0; i < MAX_JOBS; i++) {
@@ -1137,32 +1228,6 @@ void setup() {
 
   if (g_data.corrupted || !strlen(g_data.wifi_ssid) || !strlen(g_data.wifi_pass))
     state.setState(CONFIGURE);
-
-  if (bat_mV >= 2500 && bat_mV < 4500) {
-    // We have 1x18650
-    if (bat_mV < 3000) {
-      LOG(1, "1x battery present and very low (%umV)\n", bat_mV);
-      batState = BATTERY_VERY_LOW;
-    } else if (bat_mV < 3200) {
-      LOG(1, "1x battery present and low (%umV)\n", bat_mV);
-      batState = BATTERY_LOW;
-    } else {
-      LOG(1, "1x battery present and in good shape (%umV)\n", bat_mV);
-      batState = BATTERY_GOOD;
-    }
-  } else if (bat_mV >= 5500) {
-    // We have 2x18650
-    if (bat_mV < 6200) {
-      LOG(1, "2x battery present and very low (%umV)\n", bat_mV);
-      batState = BATTERY_VERY_LOW;
-    } else if (bat_mV < 6500) {
-      LOG(1, "2x battery present and low (%umV)\n", bat_mV);
-      batState = BATTERY_LOW;
-    } else {
-      LOG(1, "2x battery present and in good shape (%umV)\n", bat_mV);
-      batState = BATTERY_GOOD;
-    }
-  }
 }
 
 void loop() {
@@ -1171,6 +1236,7 @@ void loop() {
   switch (state.getState()) {
     case SLEEPING:
       wifi_set_sleep_type(NONE_SLEEP_T);
+      check_battery();
       if (checkForJobs())
         return;
       if (getAction(button, BTN_ACT_PRESSED)) {
@@ -1249,9 +1315,13 @@ void loop() {
           else
             state.setStateWithNext({START_SERVO, 0}, {GET_NTP_TIME, 0});
         } else {
+          /* 
+           *  Since we are woken-up by the button, we might aswell check the NTP time,
+           *  so comment out this branch for now
           if (haveRTC) 
             state.setState({WAKE_UP, 300000});
           else
+          */
             state.setStateWithNext({GET_NTP_TIME, 0}, {WAKE_UP, 300000});
         }
       }
@@ -1289,10 +1359,7 @@ void loop() {
       wifi_disconnect();
       if (haveScale) {
         LOG(1, "Powering scale\n");
-        // Reset i2c lines
-        digitalWrite(LOADCELL_DOUT_PIN, LOW);
-        digitalWrite(LOADCELL_SCK_PIN, LOW);
-        delay(10);
+        reset_i2c();
         scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
         scale.wait_ready_timeout(1000, 100);
         scale.set_scale(DEF_CALI);
@@ -1318,7 +1385,8 @@ void loop() {
         u16 mA = read_adc();
         u64 currentMillis = millis();
         // We have a 1 ohm current sense resistor, so current = voltage
-        if (mA > 500 && currentMillis - lastStartMillis > 100)
+        // Also, allow the servo to start (100ms should do)
+        if (mA > servoStallCurrent && currentMillis - lastStartMillis > 100)
           stallCheckNum++;
         else
           stallCheckNum = 0;
@@ -1391,8 +1459,10 @@ void loop() {
 
           u8 gr;
           if (haveScale) {
+            // Wait a little bit for the grains to settle on the scale
+            delay(200);
             float w = scale.get_units(10);
-            LOG(1, "Scale read: %.2f\n", w);
+            LOG(1, "Scale read: %.2fg\n", w);
             scale.power_down();
             gr = round(w + 0.49);
           } else {

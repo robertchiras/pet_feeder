@@ -12,7 +12,7 @@ PinControl::PinControl(u8 num) {
 
 PinData *PinControl::getFreePin() {
   for (u8 i = 0; i < numPins; i++) {
-    LOG(3, "@getFreePin: pin[%d].pin = %d\n", i, pins[i].pin);
+    LOG(4, "@getFreePin: pin[%d].pin = %d\n", i, pins[i].pin);
     if (!pins[i].pin)
       return &pins[i];
   }
@@ -35,7 +35,7 @@ bool PinControl::addPin(u8 pin, u8 state) {
     p->pin = pin;
     p->state = state;
     digitalWrite(pin, state);
-    LOG(3, "Added pin %d with default state %d\n", pin, state);
+    LOG(4, "Added pin %d with default state %d\n", pin, state);
     return true;
   }
  
@@ -48,7 +48,7 @@ bool PinControl::addPin(u8 pin, u8 state) {
   pins[numPins - 1].pin = pin;
   pins[numPins - 1].state = state;
   digitalWrite(pin, state);
-  LOG(3, "[Realloc] Added pin %d with default state %d\n", pin, state);
+  LOG(4, "[Realloc] Added pin %d with default state %d\n", pin, state);
   
   return true;
 }
@@ -76,7 +76,7 @@ bool PinControl::startLedFlash(const u8 pin, u16 delay1, u8 num1, u16 off1, u16 
   p->state = state;
   digitalWrite(pin, state);
   bitSet(activePins, pin);
-  LOG(3, "Starting to flash led %d: [%u, %u, %u]\n", pin, delay1, num1, off1);
+  LOG(4, "Starting to flash led %d: [%u, %u, %u]\n", pin, delay1, num1, off1);
     
   return true;  
 }
@@ -116,7 +116,7 @@ bool PinControl::startLedDim(const u8 pin, u16 dim_delay) {
   p->state = LOW;
   digitalWrite(pin, LOW);
   bitSet(activePins, pin);
-  LOG(3, "Starting to dim led %d: [%u, %u, %u]\n", pin, dim_delay, p->off1, p->delay1);
+  LOG(4, "Starting to dim led %d: [%u, %u, %u]\n", pin, dim_delay, p->off1, p->delay1);
 }
 
 bool PinControl::stopLed(const u8 pin, u8 state) {
@@ -129,7 +129,7 @@ bool PinControl::stopLed(const u8 pin, u8 state) {
     return false;
 
   bitClear(activePins, pin);
-  LOG(3, "Stopped to flash led %d, state=%d\n", pin, state);
+  LOG(4, "Stopped to flash led %d, state=%d\n", pin, state);
   return true;
 }
 
@@ -139,7 +139,7 @@ void PinControl::stopLeds(u8 state) {
     if (!bitRead(activePins, pins[i].pin))
       continue;
     bitClear(activePins, pins[i].pin);
-    LOG(3, "Stopped to flash led %d, state=%d\n", pins[i].pin, state);
+    LOG(4, "Stopped to flash led %d, state=%d\n", pins[i].pin, state);
   }
 }
 
@@ -152,7 +152,7 @@ void PinControl::run() {
       p = &pins[i];
       u16 elapsed = now - p->trigger_time;
       if (p->num1 && (p->cur_num == p->num1 * 2)) {
-        //LOG(3, "@run(num1 reached): now=%lu, active pin[%d]: trigger_time=%lu, num=%u, cur_num=%u, delay=%u, off1=%u\n", now, p->pin, p->trigger_time, p->num1, p->cur_num, p->delay, p->off1);
+        //LOG(4, "@run(num1 reached): now=%lu, active pin[%d]: trigger_time=%lu, num=%u, cur_num=%u, delay=%u, off1=%u\n", now, p->pin, p->trigger_time, p->num1, p->cur_num, p->delay, p->off1);
         if (p->off1 && (elapsed >= p->off1)) {
           p->trigger_time = now;
           if (p->num2) {
@@ -167,7 +167,7 @@ void PinControl::run() {
           stopLed(i);
         }
       } else if (p->num2 && (p->cur_num == (p->num1 * 2 + p->num2 * 2))) {
-        //LOG(3, "@run(num2 reached): now=%lu, active pin[%d]: trigger_time=%lu, num=%u, cur_num=%u, delay=%u, off2=%u\n", now, p->pin, p->trigger_time, p->num2, p->cur_num, p->delay, p->off2);
+        //LOG(4, "@run(num2 reached): now=%lu, active pin[%d]: trigger_time=%lu, num=%u, cur_num=%u, delay=%u, off2=%u\n", now, p->pin, p->trigger_time, p->num2, p->cur_num, p->delay, p->off2);
         if (p->off2 && (elapsed >= p->off2)) {
           p->trigger_time = now;
           p->cur_num = 1;
@@ -184,7 +184,7 @@ void PinControl::run() {
             u8 newState;
             p->trigger_time = now;
             p->cur_num++;
-            //LOG(3, "@run(delay reached): now=%lu, active pin[%d]: trigger_time=%lu, num=%u, cur_num=%u, delay=%u\n", now, p->pin, p->trigger_time, p->num1, p->cur_num, p->delay);
+            //LOG(4, "@run(delay reached): now=%lu, active pin[%d]: trigger_time=%lu, num=%u, cur_num=%u, delay=%u\n", now, p->pin, p->trigger_time, p->num1, p->cur_num, p->delay);
     
             if (p->state == LOW)
               newState = HIGH;
@@ -212,7 +212,7 @@ void PinControl::run() {
                 dim_value = 255 - dim_value;
               }
             }
-            //LOG(3, "@run(dimming): now=%lu, trigger_time=%lu, active pin[%d]: delay=%u, elapsed=%u, dim_value:%u\n", now, p->trigger_time, p->pin, p->delay, elapsed, dim_value);
+            //LOG(4, "@run(dimming): now=%lu, trigger_time=%lu, active pin[%d]: delay=%u, elapsed=%u, dim_value:%u\n", now, p->trigger_time, p->pin, p->delay, elapsed, dim_value);
             analogWrite(p->pin, dim_value);
             break;
         }
