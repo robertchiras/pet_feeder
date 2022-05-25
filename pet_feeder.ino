@@ -1,23 +1,17 @@
 #include <time.h>
-
 #include <EEPROM.h>
-
 #include <DNSServer.h>
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include <ArduinoOTA.h>
 #include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
-
 #include <Servo.h>
-
 #include "HX711.h"
-
 #include <Wire.h>
 #include "RTClib.h"
-RTC_DS1307 rtc;
 
-#include "Bits.h"
+#include "RtcMem.h"
 #include "PinCtrl.h"
 #include "Logger.h"
 #include "web_page.h"
@@ -74,30 +68,6 @@ extern "C" {
 #define SLEEP_SECS    HOURS(2)
 #define MODEM_SLEEP 1
 
-/* RTC memory defines */
-#define MAGIC_ID 0xfcec
-#define RUN_MAGIC_ID 0xccec
-#define OTA_MAGIC_ID 0xdcec
-/*
- * Structure of MAGIC_BLK:
- * 31-16: MAGIC_ID
- * 15-3: Reserved
- *    2: Daylight Saving Time
- *    1: Deep Sleep Enabled
- *    0: Initialized bit
- */
-/*
- * Structure of RUN_BLK:
- * 15-0: lastRun
- */
-#define RTC_BLK 127 // 127-128 - time obtained from NTP/RTC
-#define UPTIME_BLK 125 //125-126 - time elapsed since we got NTP/RTC
-#define MAGIC_BLK 124
-#define RTCU_BLK 123 // last updated RTC time
-#define RUN_BLK 122
-#define STATS_BLK 121
-/* END RTC memory defines */
-
 u16 wake_num = 0; // number of wake-ups since power-on
 u16 crash_num = 0; // number of crashes since power-on
 u8 ntpFail = 0;
@@ -105,20 +75,23 @@ bool first_boot = false;
 bool time_updated = false;
 bool haveScale = false;
 bool haveRTC = false;
-bool i2cReset = false;
 u64 rtcMillis; // Elapsed millis from boot until we got the actual time
 time_t rtcTime; // actual NTP/RTC time
 u64 rtcUptime; // Elapsed millis since we got time from NTP or RTC
 
 /* Digital I/O */
+const u8 I2C_SCL = D1;
+const u8 I2C_SDA = D2;
 const u8 pin_ctrl_stat1 = D3;
 const u8 pin_ctrl_stat2 = D4;
 const u8 pin_ctrl_servo = D5;
 const u8 pin_led_status = D6;
 const u8 pin_btn_control = D7;
 const u8 pin_ctrl_mux = D8;
+/* END Digital I/O */
 
-
+/* Analog I/O */
+const u8 pin_ctrl_adc = A0;
 //#define BAT_DIV (100.0f / 300.0f) // voltage divider of 200k/100k at battery input
 /*
  * The voltage divider is not actually 1/3 (0.33), because the more we increase the
@@ -127,11 +100,10 @@ const u8 pin_ctrl_mux = D8;
  */
 #define BAT_DIV 0.2812f
 #define ADC_READS 5
-const u8 pin_ctrl_adc = A0;
+/* END Analog I/O */
 
 ButtonManager *button;
 bool buttonWake = false;
-// create pin controller with 1 pin (status led)
 PinControl pinCtrl(1);
 DeviceState state(&pinCtrl, pin_led_status);
 Servo servo;
@@ -139,27 +111,25 @@ Servo servo;
 // HX711 circuit wiring
 #define DEF_CALI (1905)
 #define M300G_CALI (2041.5f)
-const int LOADCELL_DOUT_PIN = D2;
-const int LOADCELL_SCK_PIN = D1;
 HX711 scale;
 
-/* END Digital I/O */
+RTC_DS1307 rtc;
 
 /* WiFi configurations */
 const byte DNS_PORT = 53;
 IPAddress apIP(192, 168, 1, 1);
 IPAddress staticIP(0, 0, 0, 0);
 DNSServer dnsServer;
+AsyncWebServer server(80);
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
 #define host_name "config.info"
 #define MYSSID "Pet Feeder"
-
-AsyncWebServer server(80); 
 
 String *ssid_names; // place-holder for SSID scan results
 u8 ssid_num; // number of scanned SSIDs
 
-WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP);
 u8 dst = 0; //daylight saving time
 /* END WiFi configurations */
 
@@ -186,6 +156,7 @@ BatteryState batState = BATTERY_UNKNOWN;
 u64 lastBatRead = 0; // millis timestamp of last battery voltage reading
 
 #define MAX_JOBS 6 // up to 6 feeds per day
+/* Global data structure to hold what we need in flash memory */
 typedef struct {
   size_t sz;
   bool dirty;
@@ -227,20 +198,66 @@ JobTrigger startTrigger;
 JobTrigger stopTrigger;
 u8 jobGrams;
 
-bool updateRTC() {
+/* I2C reset bit */
+#define rtcmem_get_i2c_reset() magic_get_bit(5)
+#define rtcmem_set_i2c_reset(rtc) magic_set_bit(rtc, 5)
+
+/* Scale present bit */
+#define rtcmem_get_scale() magic_get_bit(4)
+#define rtcmem_set_scale(scale) magic_set_bit(scale, 4)
+
+/* RTC present bit */
+#define rtcmem_get_rtc() magic_get_bit(3)
+#define rtcmem_set_rtc(rtc) magic_set_bit(rtc, 3)
+
+/* Daylight Saving Time bit */
+#define rtcmem_get_dst() magic_get_bit(2)
+#define rtcmem_set_dst(dst) magic_set_bit(dst, 2)
+
+/* Deep-sleep enabled bit */
+#define rtcmem_get_sleep() magic_get_bit(1)
+#define rtcmem_set_sleep(sleep) magic_set_bit(sleep, 1)
+
+/* Initialized bit */
+#define rtcmem_get_init() magic_get_bit(0)
+#define rtcmem_set_init(ini) \
+{\
+  magic_set_bit(ini, 0);\
+  if (g_data.initialized != ini) {\
+    g_data.initialized = ini;\
+    g_data.dirty = true;\
+  }\
+}
+
+// RUN_BLK
+void rtcmem_get_lastRun(run_time_t &rt) {
+  rt.hh = rtcmem_get_byte(RUN_BLK, 0);
+  rt.mm = rtcmem_get_byte(RUN_BLK, 1);
+}
+void rtcmem_set_lastRun(const run_time_t &rt) {
+  rtcmem_set_byte(RUN_BLK, 0, rt.hh);
+  rtcmem_set_byte(RUN_BLK, 1, rt.mm);
+}
+
+//STATS_BLK
+#define rtcmem_get_wakes() rtcmem_get_u16(STATS_BLK, 0)
+#define rtcmem_set_wakes(v) rtcmem_set_u16(STATS_BLK, v, 0)
+#define rtcmem_get_crashes() rtcmem_get_u16(STATS_BLK, 2)
+#define rtcmem_set_crashes(v) rtcmem_set_u16(STATS_BLK, v, 2)
+
+bool update_rtc() {
   rtcTime = 0;
   
   if (!haveRTC)
     return false;
 
-  if (i2cReset) {
+  if (rtcmem_get_i2c_reset()) {
     reset_i2c();
-  
     if (!rtc.begin()) {
       LOG(1, "RTC probe failed in update!\n");
       return false;
     }
-    i2cReset = false;
+    rtcmem_set_i2c_reset(false);
   }
 
   if (!rtc.isrunning())
@@ -259,27 +276,7 @@ bool updateRTC() {
   return true;
 }
 
-bool sleepRTC() {
-  if (!haveRTC)
-    return false;
-
-  if (i2cReset) {
-    // Reset i2c lines
-    digitalWrite(LOADCELL_DOUT_PIN, LOW);
-    digitalWrite(LOADCELL_SCK_PIN, LOW);
-  
-    if (!rtc.begin()) {
-      LOG(1, "RTC probe failed in sleep!\n");
-      return false;
-    }
-  }
-
-  rtc.writeSqwPinMode(DS1307_ON);
-
-  return true;
-}
-
-time_t getCurrentTime(bool useNtp = false) {
+time_t get_time(bool useNtp = false) {
   time_t now = 0;
 
   if (useNtp) {
@@ -294,7 +291,7 @@ time_t getCurrentTime(bool useNtp = false) {
           (t->tm_mon == 2 && 31 - t->tm_mday < 7) ||
           (t->tm_mon == 9 && 31 - t->tm_mday >= 7))) {
         dst = 1;
-        rtc_set_dst(true);
+        rtcmem_set_dst(true);
         now += 3600;
         LOG(1, "Updating DST to: %u -> %s", dst, ctime(&now));
       } else if (dst &&
@@ -302,7 +299,7 @@ time_t getCurrentTime(bool useNtp = false) {
           (t->tm_mon == 2 && 31 - t->tm_mday >= 7) ||
           (t->tm_mon == 9 && 31 - t->tm_mday < 7))) {
         dst = 0;
-        rtc_set_dst(false);
+        rtcmem_set_dst(false);
         now -= 3600;
         LOG(1, "Updating DST to: %u -> %s", dst, ctime(&now));
       }
@@ -314,7 +311,7 @@ time_t getCurrentTime(bool useNtp = false) {
       }
       rtcMillis = millis();
       time_updated = true;
-      if (updateRTC()) {
+      if (update_rtc()) {
         DateTime ntp_time((u32)now);
         DateTime rtc_time((u32)rtcTime);
         LOG(1, "NTP timestamp: %llu, RTC timestamp: %llu\n", now, rtcTime);
@@ -358,7 +355,7 @@ time_t getCurrentTime(bool useNtp = false) {
   return now;
 }
 
-String processor(const String& var) {
+String html_processor(const String& var) {
   String ret = "";
   char c[2];
   u32 ss = millis() / 1000;
@@ -370,7 +367,7 @@ String processor(const String& var) {
   hh %= 24;
 
   if (var == "DATE") {
-    time_t now  = getCurrentTime();
+    time_t now  = get_time();
     if (now)
       ret += "<p class=\"time\">Date: " + String(ctime(&now)) + "</p>";
   } else if (var == "DD") {
@@ -445,82 +442,6 @@ String processor(const String& var) {
   return ret;
 }
 
-// MAGIC_BLK
-#define rtc_get_magic() rtc_get_u16(MAGIC_BLK, 2)
-#define rtc_set_magic(v) rtc_set_u16(MAGIC_BLK, v, 2)
-
-bool rtc_get_sleep() {
-  u32 w_data = 0;
-  system_rtc_mem_read(MAGIC_BLK, &w_data, sizeof(w_data));
-  LOG(2, "rtc_get_sleep -> w_data: 0x%02X\n", w_data);
-   
-  return MAGIC_GET_SLEEP(w_data);
-}
-
-void rtc_set_sleep(bool sleep) {
-  u32 w_data = 0;
-  system_rtc_mem_read(MAGIC_BLK, &w_data, sizeof(w_data));
-  w_data = MAGIC_SET_SLEEP(w_data, !!sleep);
-  LOG(2, "rtc_set_sleep(%d) -> w_data: 0x%02X\n", sleep, w_data);
-  system_rtc_mem_write(MAGIC_BLK, &w_data, sizeof(w_data));
-}
-
-bool rtc_get_dst() {
-  u32 w_data = 0;
-  system_rtc_mem_read(MAGIC_BLK, &w_data, sizeof(w_data));
-  LOG(2, "rtc_get_dst -> w_data: 0x%02X\n", w_data);
-   
-  return MAGIC_GET_DST(w_data);
-}
-
-void rtc_set_dst(bool dst) {
-  u32 w_data = 0;
-  system_rtc_mem_read(MAGIC_BLK, &w_data, sizeof(w_data));
-  w_data = MAGIC_SET_DST(w_data, !!dst);
-  LOG(2, "rtc_set_dst(%d) -> w_data: 0x%02X\n", dst, w_data);
-  system_rtc_mem_write(MAGIC_BLK, &w_data, sizeof(w_data));
-}
-
-bool rtc_get_init() {
-  u32 w_data = 0;
-  bool ret = false;
-  
-  system_rtc_mem_read(MAGIC_BLK, &w_data, sizeof(w_data));
-  LOG(2, "rtc_get_init -> w_data: 0x%02X\n", w_data);
-  
-  return MAGIC_GET_INIT(w_data);
-}
-
-void rtc_set_init(bool ini) {
-  u32 w_data = 0;
-  
-  system_rtc_mem_read(MAGIC_BLK, &w_data, sizeof(w_data));
-  w_data = MAGIC_SET_INIT(w_data, !!ini);
-  LOG(2, "rtc_set_init -> w_data: 0x%02X\n", w_data);
-  system_rtc_mem_write(MAGIC_BLK, &w_data, sizeof(w_data));
-
-  if (g_data.initialized != ini) {
-    g_data.initialized = ini;
-    g_data.dirty = true;
-  }
-}
-
-// RUN_BLK
-void rtc_get_lastRun(run_time_t &rt) {
-  rt.hh = rtc_get_byte(RUN_BLK, 0);
-  rt.mm = rtc_get_byte(RUN_BLK, 1);
-}
-void rtc_set_lastRun(const run_time_t &rt) {
-  rtc_set_byte(RUN_BLK, 0, rt.hh);
-  rtc_set_byte(RUN_BLK, 1, rt.mm);
-}
-
-//STATS_BLK
-#define rtc_get_wakes() rtc_get_u16(STATS_BLK, 0)
-#define rtc_set_wakes(v) rtc_set_u16(STATS_BLK, v, 0)
-#define rtc_get_crashes() rtc_get_u16(STATS_BLK, 2)
-#define rtc_set_crashes(v) rtc_set_u16(STATS_BLK, v, 2)
-
 void load_flash(bool first_boot = false) {
   EEPROM.begin(sizeof(g_data));
   if (g_data.corrupted)
@@ -538,9 +459,9 @@ void load_flash(bool first_boot = false) {
   g_data.dirty = false;
   if (first_boot) {
     //wifi_to_rtc();
-    rtc_set_init(g_data.initialized);
+    rtcmem_set_init(g_data.initialized);
     if (g_data.sleep_type == DEEP_SLEEP)
-      rtc_set_sleep(true);
+      rtcmem_set_sleep(true);
   }
   if (!g_data.sleep_type) {
     g_data.sleep_type = DEEP_SLEEP;
@@ -707,7 +628,7 @@ void handleConfig(AsyncWebServerRequest *request) {
     switch (sleep_type) {
       case 1:
         g_data.sleep_type = DEEP_SLEEP;
-        rtc_set_sleep(true);
+        rtcmem_set_sleep(true);
         msg += "Deep Sleep";
         break;
       case 2:
@@ -749,7 +670,7 @@ void handleStatus(AsyncWebServerRequest *request) {
   u32 dd = hh / 24;
   hh %= 24;
   
-  now = getCurrentTime();
+  now = get_time();
   t = localtime(&now);
   
   html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";
@@ -826,7 +747,7 @@ bool wifi_config(int mode) {
   }
 
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-    request->send_P(200, "text/html", index_html, processor);
+    request->send_P(200, "text/html", index_html, html_processor);
   });
   server.on("/config", handleConfig);
   server.on("/status", handleStatus);
@@ -838,7 +759,7 @@ bool wifi_config(int mode) {
 }
 
 #define FEED_25G MAP_GRAMS(25)
-bool checkForJobs(u64 *timeTillNext = NULL) {   
+bool check_for_jobs(u64 *timeTillNext = NULL) {   
   time_t now;
   struct tm *t;
   job_t *job = NULL;
@@ -847,7 +768,7 @@ bool checkForJobs(u64 *timeTillNext = NULL) {
   if (useNtp && (millis() - rtcMillis) < NTP_REFRESH) 
     useNtp = false;
     
-  now = getCurrentTime(useNtp);
+  now = get_time(useNtp);
   if (!now) {
     state.setState(GET_NTP_TIME);
     return true;
@@ -870,7 +791,7 @@ bool checkForJobs(u64 *timeTillNext = NULL) {
       if (lastRun.hh || lastRun.mm) {
         lastRun = {0, 0};
         LOG(1, "Resetting lastRun: %02u:%02u\n", lastRun.hh, lastRun.mm);
-        rtc_set_lastRun(lastRun);
+        rtcmem_set_lastRun(lastRun);
       }
       break;
     } else if (t->tm_hour == nextJob->hh && t->tm_min >= nextJob->mm && t->tm_min - 2 <= nextJob->mm) {
@@ -898,7 +819,7 @@ bool checkForJobs(u64 *timeTillNext = NULL) {
   startTrigger = JOB_TRIGGER_AUTO;
   lastRun = thisRun;
   jobGrams = job->grams;
-  rtc_set_lastRun(lastRun);
+  rtcmem_set_lastRun(lastRun);
   state.setState({START_SERVO, MAP_GRAMS(job->grams)});
   return true;
 }
@@ -945,7 +866,7 @@ void enter_sleep() {
   //sleepNow = max_sleep;
   sleepNow = SLEEP_SECS;
   u64 timeTillNext;
-  checkForJobs(&timeTillNext);
+  check_for_jobs(&timeTillNext);
   LOG(1, "Time till next job: %llus, max_sleep: %llus\n", timeTillNext, sleepNow);
   if (timeTillNext != MAX_UINT && timeTillNext < sleepNow) {
     if (timeTillNext > 10)
@@ -965,8 +886,6 @@ void enter_sleep() {
   sleepNow *= 1000000;
   // Connect D0 to RST to wake up
   pinMode(D0, WAKEUP_PULLUP);
-  sleepRTC();
-  delay(1);
   
   wifi_disconnect();
   unInstallButton(button);
@@ -974,7 +893,7 @@ void enter_sleep() {
 
   save_flash();
   save_uptime(sleepNow);
-  rtc_set_magic(MAGIC_ID);
+  rtcmem_set_magic(MAGIC_ID);
   LOG(1, "Entering sleep for %llu seconds (%d)\n", (sleepNow / 1000000), wake_num);
   delay(10);
   ESP.deepSleep((sleepNow - 10000), WAKE_RF_DEFAULT);
@@ -1074,15 +993,17 @@ void check_battery() {
 void reset_i2c() {
   LOG(2, "Resetting i2c lines\n");
   // Reset i2c lines
-  digitalWrite(LOADCELL_DOUT_PIN, LOW);
-  digitalWrite(LOADCELL_SCK_PIN, LOW);
+  digitalWrite(I2C_SDA, LOW);
+  digitalWrite(I2C_SCL, LOW);
   delay(1);
-  i2cReset = true;
+  rtcmem_set_i2c_reset(true);
 }
 
 void setup() {
   u32 magic_id;
   bool btn_wake = false;
+  bool reset_ntp = false;
+  bool rtc_init = false;
 
   pinMode(pin_ctrl_stat1, OUTPUT);
   pinMode(pin_ctrl_stat2, OUTPUT);
@@ -1090,51 +1011,19 @@ void setup() {
   pinMode(pin_ctrl_servo, OUTPUT);
   pinMode(pin_led_status, OUTPUT);
   pinMode(pin_btn_control, INPUT);
-  
+
+  /* 
+   * Put the mux pin to H in order to disable the RST mux while awake.
+   * This will prevent resetting us while pressing the button.
+   */
   digitalWrite(pin_ctrl_mux, HIGH);
-  digitalWrite(pin_ctrl_servo, LOW);
-  btn_wake = (digitalRead(pin_btn_control) == LOW);
   
-  // TODO: For debugging only, remove this delay
-  //delay(3000);
+  btn_wake = (digitalRead(pin_btn_control) == LOW);
   
   // put your setup code here, to run once:
   Serial.begin(115200);
   LOG(1, "\nSetup\n");
   LOG(1, "Button wake: %u\n", btn_wake);
-
-  /*
-  LOG(1, "Waiting for probing:\n");
-  int max_wait = 5;
-  for (int i = 0; i < max_wait; i++) {
-    LOG(1, "Seconds remaining: %d\n", max_wait - i);
-    delay(1000);
-  }
-  */
-
-  reset_i2c();
-  //Probe HX711 load_cell
-  scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
-  haveScale = scale.wait_ready_timeout(1000, 100);
-  if (haveScale) {
-    LOG(1, "Scale present!\n");
-    //calibrate_load_cell();
-  } else {
-    LOG(1, "Scale absent!\n");
-  }
-  scale.power_down();
-  
-  reset_i2c();
-  //Probe RTC
-  haveRTC = rtc.begin();
-  if (haveRTC) {
-    LOG(1, "RTC present!\n");
-    Ds1307SqwPinMode sq_pin = rtc.readSqwPinMode();
-    LOG(2, "RTC control register: 0x%02X\n", (u8)sq_pin);
-    i2cReset = false;
-  } else {
-    LOG(1, "RTC absent!\n");
-  }
 
   button = installButton(pin_btn_control, BTN_TYPE_MOMENTARY, BTN_PULLUP);
   if (!button) {
@@ -1149,24 +1038,21 @@ void setup() {
 
   rtcTime = 0;
   rtcUptime = 0;
-  magic_id = rtc_get_magic();
-  crash_num = rtc_get_crashes();
+  magic_id = rtcmem_get_magic();
+  crash_num = rtcmem_get_crashes();
   
   if (magic_id != MAGIC_ID) {
     if (magic_id == RUN_MAGIC_ID) {
-      crash_num = rtc_get_crashes();
+      crash_num = rtcmem_get_crashes();
       LOG(1, "Oooups! Just had a crash...\n");
       crash_num++;
-      rtc_set_crashes(crash_num);
-      // Since we crashed, we need to start over with NTP time
-      // Reset time only if we rely on NTP
-      if (!haveRTC) {
-        system_rtc_mem_write(RTC_BLK, &rtcTime, sizeof(rtcTime));
-        system_rtc_mem_write(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
-      }
+      rtcmem_set_crashes(crash_num);
+      reset_ntp = true;
     } else if (magic_id == OTA_MAGIC_ID) {
       LOG(1, "Restart after OTA\n");
     } else{
+      // TODO: For debugging only, remove this delay
+      //delay(10000);
       LOG(1, "First boot... clearing regs!\n");
       magic_id = 0;
       first_boot = true;
@@ -1174,24 +1060,64 @@ void setup() {
       system_rtc_mem_write(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
       for (u8 blk = MAGIC_BLK; blk >= STATS_BLK; blk--)
         system_rtc_mem_write(blk, &magic_id, sizeof(magic_id));
+
+      //Probe HX711 load_cell
+      reset_i2c();
+      scale.begin(I2C_SDA, I2C_SCL);
+      if (scale.wait_ready_timeout(1000, 100)) {
+        LOG(1, "Scale present!\n");
+        rtcmem_set_scale(true);
+        scale.power_down();
+      } else {
+        LOG(1, "Scale absent!\n");
+      }
+
+      //Probe RTC
+      reset_i2c();
+      if (rtc.begin()) {
+        rtcmem_set_rtc(true);
+        rtc_init = true;
+        LOG(1, "RTC present!\n");
+        rtc.writeSqwPinMode(DS1307_ON);
+        Ds1307SqwPinMode sq_pin = rtc.readSqwPinMode();
+        LOG(2, "RTC control register: 0x%02X\n", (u8)sq_pin);
+        rtcmem_set_i2c_reset(false);
+      } else {
+        LOG(1, "RTC absent!\n");
+      }
     }
   } else {
     system_rtc_mem_read(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
     system_rtc_mem_read(RTC_BLK, &rtcTime, sizeof(rtcTime));
   }
 
-  updateRTC();
-
-  dst = !!rtc_get_dst();
+  dst = !!rtcmem_get_dst();
   load_flash(first_boot);
-  wake_num = rtc_get_wakes();
+  wake_num = rtcmem_get_wakes();
   if (magic_id == MAGIC_ID) {
     wake_num++;
-    rtc_set_wakes(wake_num);
+    rtcmem_set_wakes(wake_num);
   }
-  crash_num = rtc_get_crashes();
-  rtc_get_lastRun(lastRun);
-  rtc_set_magic(RUN_MAGIC_ID);
+  crash_num = rtcmem_get_crashes();
+  rtcmem_get_lastRun(lastRun);
+  haveRTC = rtcmem_get_rtc();
+  haveScale = rtcmem_get_scale();
+  rtcmem_set_magic(RUN_MAGIC_ID);
+
+  if (reset_ntp && !haveRTC) {
+    // Since we crashed, we need to start over with NTP time
+    system_rtc_mem_write(RTC_BLK, &rtcTime, sizeof(rtcTime));
+    system_rtc_mem_write(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
+  }
+
+  if (haveRTC && !rtc_init) {
+    if (rtcmem_get_i2c_reset())
+      reset_i2c();
+    if (!rtc.begin())
+        LOG(1, "RTC probe failed in wakeup!\n");
+    rtcmem_set_i2c_reset(false);
+  }
+  update_rtc();
 
   // Only tested stall current for 0-40 / 140-180, so will use these by now
   if (SERVO_MOVE_FW > 100)
@@ -1199,15 +1125,16 @@ void setup() {
   else
     servoStallCurrent = map(SERVO_MOVE_FW, 0, 40, 700, 400);
 
-  time_t now = getCurrentTime();
+  time_t now = get_time();
   LOG(1, "Wake-ups: %u\n", wake_num);
   LOG(1, "Crashes: %u\n", crash_num);
   LOG(1, "Initialized: %d\n", g_data.initialized);
+  LOG(1, "Sleep type: %d\n", g_data.sleep_type);
   LOG(1, "DST: %u\n", dst);
+  LOG(1, "RTC present: %s\n", haveRTC?"TRUE":"FALSE");
+  LOG(1, "Scale present: %s\n", haveScale?"TRUE":"FALSE");
   LOG(1, "NTP/RTC uptime: %llu\n", rtcUptime);
   LOG(1, "NTP/RTC time: %llu -> %s", rtcTime, ctime(&rtcTime));
-  LOG(1, "Current time: %llu -> %s", now, ctime(&now));
-  LOG(1, "Sleep type: %d\n", g_data.sleep_type);
   LOG(1, "Servo stall current: %u\n", servoStallCurrent);
   LOG(1, "Last Run: %02u:%02u\n", lastRun.hh, lastRun.mm);
   LOG(1, "WiFi config: SSID=%s PASS=%s\n", g_data.wifi_ssid, g_data.wifi_pass);
@@ -1237,7 +1164,7 @@ void loop() {
     case SLEEPING:
       wifi_set_sleep_type(NONE_SLEEP_T);
       check_battery();
-      if (checkForJobs())
+      if (check_for_jobs())
         return;
       if (getAction(button, BTN_ACT_PRESSED)) {
           startTrigger = JOB_TRIGGER_BUTTON;
@@ -1337,7 +1264,7 @@ void loop() {
           return;
         }
       }
-      if (checkForJobs())
+      if (check_for_jobs())
         return;
       if (getAction(button, BTN_ACT_PRESSED)) {
         startTrigger = JOB_TRIGGER_BUTTON;
@@ -1360,7 +1287,7 @@ void loop() {
       if (haveScale) {
         LOG(1, "Powering scale\n");
         reset_i2c();
-        scale.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
+        scale.begin(I2C_SDA, I2C_SCL);
         scale.wait_ready_timeout(1000, 100);
         scale.set_scale(DEF_CALI);
         scale.tare();
@@ -1373,7 +1300,7 @@ void loop() {
       LOG(1, "Starting servo\n");
       servo.attach(pin_ctrl_servo);
       lastTurnMillis = lastStallMillis = lastStartMillis = stallCheckNum = 0;
-      lastRunTime = getCurrentTime();
+      lastRunTime = get_time();
       state.setState({RUN_SERVO, state.getWaitTime()});
       lastRunMillis = millis();
       servo.write(SERVO_MOVE_FW);
@@ -1547,7 +1474,7 @@ void loop() {
           ssid_num = 0;
         }
         // since we are connected to wifi, update rtcTime
-        //time_t now = getCurrentTime(true);
+        //time_t now = get_time(true);
         //LOG(1, "Current NTP time: %llu -> %s", now, ctime(&now));
         wifi_config(WIFI_STA);
         state.setSuccess();
@@ -1566,7 +1493,7 @@ void loop() {
 
     case GET_NTP_TIME:
       if (WiFi.status() != WL_CONNECTED) {
-        time_t now = getCurrentTime();
+        time_t now = get_time();
         if (now && ntpFail++ > 2) {
           LOG(1, "NTP time sync failed, using estimate: %s\n", ctime(&now));
           if (!state.setNextState())
@@ -1581,8 +1508,8 @@ void loop() {
           return;
         }
       }
-      if (!getCurrentTime(true)) {
-        time_t now = getCurrentTime();
+      if (!get_time(true)) {
+        time_t now = get_time();
         if (now && ntpFail++ > 2) {
           LOG(1, "NTP time sync failed, using estimate: %s\n", ctime(&now));
           if (!state.setNextState())
@@ -1600,7 +1527,7 @@ void loop() {
 
     case WAIT_NTP_TIME:
       {
-        time_t now = getCurrentTime(true);
+        time_t now = get_time(true);
         if (now > 0) {
           LOG(1, "Current NTP time: %llu -> %s", now, ctime(&now));
           if (!state.setNextState())
@@ -1634,7 +1561,7 @@ void loop() {
         }
         save_flash();
         save_uptime();
-        rtc_set_magic(OTA_MAGIC_ID);
+        rtcmem_set_magic(OTA_MAGIC_ID);
       });
       ArduinoOTA.onError([](ota_error_t error) {
         digitalWrite(pin_led_status, HIGH);
