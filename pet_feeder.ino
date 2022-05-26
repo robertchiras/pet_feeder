@@ -66,6 +66,7 @@ extern "C" {
 
 #define WIFI_TIMEOUT  30
 #define SLEEP_SECS    HOURS(2)
+//#define SLEEP_SECS    60 // for deep-sleep debugging
 #define MODEM_SLEEP 1
 
 u16 wake_num = 0; // number of wake-ups since power-on
@@ -76,8 +77,10 @@ bool time_updated = false;
 bool haveScale = false;
 bool haveRTC = false;
 u64 rtcMillis; // Elapsed millis from boot until we got the actual time
-time_t rtcTime; // actual NTP/RTC time
 u64 rtcUptime; // Elapsed millis since we got time from NTP or RTC
+time_t rtcTime; // actual NTP/RTC time
+u8 rtcCal = 1; // number of days to calibrate RTC (may increase during calibration process)
+#define RTC_DRIFT_EN 0
 
 /* Digital I/O */
 const u8 I2C_SCL = D1;
@@ -245,7 +248,21 @@ void rtcmem_set_lastRun(const run_time_t &rt) {
 #define rtcmem_get_crashes() rtcmem_get_u16(STATS_BLK, 2)
 #define rtcmem_set_crashes(v) rtcmem_set_u16(STATS_BLK, v, 2)
 
-bool update_rtc() {
+bool update_rtc(time_t ntp = 0) {
+#if RTC_DRIFT_EN
+  u8 rtc_drift = 0;
+  /* drift_ctl structure:
+   * 2-4: number of monitored drifts
+   *   1: drift ahead or behind
+   *   0: drift established
+  */
+  u8 drift_ctl = 0;
+  u8 drift_monitor_num = 0;
+  bool drift_ahead;
+  bool drift_enabled;
+  u32 last_drift_check;
+#endif  
+
   rtcTime = 0;
   
   if (!haveRTC)
@@ -265,14 +282,106 @@ bool update_rtc() {
 
   DateTime rtc_time = rtc.now();
   rtcTime = rtc_time.unixtime();
+  LOG(1, "RTC date: %02u/%02u/%u %02u:%02u:%02u\n",
+      rtc_time.day(), rtc_time.month(), rtc_time.year(),
+      rtc_time.hour(), rtc_time.minute(), rtc_time.second());
+      
   system_rtc_mem_write(RTC_BLK, &rtcTime, sizeof(rtcTime));
   rtcUptime = 0;
   system_rtc_mem_write(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
 
-  LOG(1, "RTC date: %02u/%02u/%u %02u:%02u:%02u\n",
+#if RTC_DRIFT_EN
+  rtc.readnvram(&rtcCal, 1, 0);
+  LOG(1, "RTC calibration period: %u days\n", rtcCal);
+  if (!rtcCal) {
+    rtcCal = 1;
+    rtc.writenvram(0, &rtcCal, 1);
+    LOG(1, "Updated RTC calibration period: %u days\n", rtcCal);
+  }
+
+  rtc.readnvram(&drift_ctl, 1, 1);
+  rtc.readnvram(&rtc_drift, 1, 2);
+  drift_enabled = drift_ctl & 0x01;
+  drift_ahead = drift_ctl & 0x02;
+  drift_monitor_num = drift_ctrl & 0x1c;
+  if (drift_enabled) {
+    rtc.readnvram(&last_drift_check, 4, 3);
+    LOG(1, "RTC drift: %s%u seconds (last check: %u)\n", drift_ahead?"+":"-", rtc_drift, last_drift_check);
+    if (last_drift_check - rtcTime > HOURS(rtcCal * 24)) {
+      TimeSpan ts(drift_ahead?rtc_drift:-rtc_drift);
+      rtc_time += ts;
+      rtcTime += ts.totalseconds();
+      LOG(1, "RTC date with drift (%d secs, %u monitors): %02u/%02u/%u %02u:%02u:%02u\n",
+        ts.totalseconds(),
+        drift_monitor_num,
         rtc_time.day(), rtc_time.month(), rtc_time.year(),
-        rtc_time.hour(), rtc_time.minute(), rtc_time.second());
-  
+        rtc_time.hour(), rtc_time.minute(), rtc_time.second());      
+      }
+  } else {
+    LOG(1, "RTC drift not yet established!'n");
+  }
+#endif
+
+  if (ntp != 0) {
+    DateTime ntp_time((u32)ntp);
+    LOG(1, "NTP timestamp: %llu, RTC timestamp: %llu\n", ntp, rtcTime);
+    LOG(1, "NTP time (%02u/%02u/%u %02u:%02u:%02u) | RTC time (%02u/%02u/%u %02u:%02u:%02u)\n",
+          ntp_time.day(), ntp_time.month(), ntp_time.year(), ntp_time.hour(), ntp_time.minute(), ntp_time.second(),
+          rtc_time.day(), rtc_time.month(), rtc_time.year(), rtc_time.hour(), rtc_time.minute(), rtc_time.second());
+    long long diff = ntp - rtcTime;
+    if (abs(diff) > 30) {
+      LOG(1, "NTP time differs from RTC time with more than 30s. Adjusting RTC!\n");
+      rtc.adjust(ntp_time);
+      // Also, update the regs
+      system_rtc_mem_write(RTC_BLK, &ntp, sizeof(ntp));
+      rtcUptime = 0;
+      system_rtc_mem_write(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
+    }
+    // Even though we didn't adjust the RTC, update the rtc_updated time
+    u32 rtc_updated;
+    system_rtc_mem_read(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
+
+#if RTC_DRIFT_EN
+    // Setup drift
+    if ((rtcTime - rtc_updated) > HOURS(rtcCal * 24)) {
+      LOG(1, "Current calculated RTC drift: %llds\n", diff);
+      if (diff > 0) {
+        // we are behind
+        if (rtc_drift && drift_ahead) {
+          // Last time we were ahead, but now we are behind
+        } else if (rtc_drift) {
+          if (diff > rtc_drift)
+            rtc_drift += (diff - rtc_drift);
+          drift_ahead = false;
+        } else {
+          rtc_drift = diff;
+          drift_ahead = false;
+          LOG(1, "First RTC drift established: %us behind\n", rtc_drift);
+        }
+      } else {
+        // we are ahead
+        if (rtc_drift && !drift_ahead) {
+          // Last time we were behind, but now we are ahead
+        } else if (rtc_drift) {
+          if (-diff > rtc_drift)
+            rtc_drift += (diff - rtc_drift);
+          drift_ahead = false;
+        } else {
+          rtc_drift -= diff;
+          drift_ahead = true;
+        }
+      }
+      // Enable drift monitoring
+      drift_ctl &= 0x01;
+      rtc.writenvram(1, &drift_ctl, 1);
+      rtc.writenvram(2, &rtc_drift, 1);
+      LOG(1, "Updated RTC calibration period: %u days\n", rtcCal);
+    }
+#endif    
+    rtc_updated = (u32)ntp;
+    system_rtc_mem_write(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
+  }
+
   return true;
 }
 
@@ -280,6 +389,7 @@ time_t get_time(bool useNtp = false) {
   time_t now = 0;
 
   if (useNtp) {
+    timeClient.setTimeOffset(HOURS(2+dst));
     timeClient.forceUpdate();
     now = timeClient.getEpochTime();
     if (now > (2021 - 1970) * 365 * HOURS(24)) {
@@ -308,30 +418,11 @@ time_t get_time(bool useNtp = false) {
         system_rtc_mem_write(RTC_BLK, &now, sizeof(now));
         rtcUptime = 0;
         system_rtc_mem_write(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
+      } else {
+        update_rtc(now);
       }
       rtcMillis = millis();
       time_updated = true;
-      if (update_rtc()) {
-        DateTime ntp_time((u32)now);
-        DateTime rtc_time((u32)rtcTime);
-        LOG(1, "NTP timestamp: %llu, RTC timestamp: %llu\n", now, rtcTime);
-        LOG(1, "NTP time (%02u/%02u/%u %02u:%02u:%02u) | RTC time (%02u/%02u/%u %02u:%02u:%02u)\n",
-              ntp_time.day(), ntp_time.month(), ntp_time.year(), ntp_time.hour(), ntp_time.minute(), ntp_time.second(),
-              rtc_time.day(), rtc_time.month(), rtc_time.year(), rtc_time.hour(), rtc_time.minute(), rtc_time.second());
-        long long diff = now - rtcTime;
-        if (abs(diff) > 30) {
-          LOG(1, "NTP time (%02u:%02u:%02u %02u/%02u/%u) differs from RTC time (%u:%u:%u %u/%u/%u) with more than 60s. Adjusting RTC!\n",
-              ntp_time.hour(), ntp_time.minute(), ntp_time.second(), ntp_time.day(), ntp_time.month(), ntp_time.year(),
-              rtc_time.hour(), rtc_time.minute(), rtc_time.second(), rtc_time.day(), rtc_time.month(), rtc_time.year());
-          rtc.adjust(ntp_time);
-          // Also, update the regs
-          system_rtc_mem_write(RTC_BLK, &now, sizeof(now));
-          rtcUptime = 0;
-          system_rtc_mem_write(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
-        }
-      }
-      u32 rtc_updated = (u32)now;
-      system_rtc_mem_write(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
       rtcTime = now;
       return now;
     }
@@ -700,6 +791,7 @@ void handleStatus(AsyncWebServerRequest *request) {
 
   html += "<p>Last Run Time: " + String(ctime(&lastRunTime)) + "</p>";
   html += "<p>Last Run Duration: " + String(lastRunDuration / 1000) + " seconds</p>";
+  html += "<p>DST: " + String(dst) + "</p>";
   html += "<p>Serial output:</p>";
   html += "</h2><h2 style=\"font-size: 0.8rem\"><pre><code>";
   html += Logger::getLog();
@@ -847,12 +939,8 @@ void do_light_sleep() {
 }
 
 void enter_sleep() {
-  u64 sleepNow;
-  //state.setState(SLEEPING);
-  //return;
-  if (g_data.sleep_type == LIGHT_SLEEP ||
-      batState == BATTERY_LOW ||
-      batState == BATTERY_VERY_LOW) {
+  u64 sleep_now;
+  if (g_data.sleep_type == LIGHT_SLEEP) {
     do_light_sleep();
     return;
   }
@@ -860,22 +948,18 @@ void enter_sleep() {
   if (g_data.sleep_type != DEEP_SLEEP)
     return;
 
-  //u32 clk_per = system_rtc_clock_cali_proc();
-  //u64 max_sleep = (u64)(MAX_UINT >> 12) * (u64)clk_per;
-  //LOG(1, "Preparing sleep: cali_proc=%u, max_sleep=%llu\n", clk_per, max_sleep);
-  //sleepNow = max_sleep;
-  sleepNow = SLEEP_SECS;
-  u64 timeTillNext;
-  check_for_jobs(&timeTillNext);
-  LOG(1, "Time till next job: %llus, max_sleep: %llus\n", timeTillNext, sleepNow);
-  if (timeTillNext != MAX_UINT && timeTillNext < sleepNow) {
-    if (timeTillNext > 10)
-      sleepNow = timeTillNext - 10;
+  sleep_now = SLEEP_SECS;
+  u64 time_till_next;
+  check_for_jobs(&time_till_next);
+  LOG(1, "Time till next job: %llus, max_sleep: %llus\n", time_till_next, sleep_now);
+  if (time_till_next != MAX_UINT && time_till_next < sleep_now) {
+    if (time_till_next > 10)
+      sleep_now = time_till_next - 10;
      else
-      sleepNow = timeTillNext;
+      sleep_now = time_till_next;
   }
 
-  if (sleepNow < 20) {
+  if (sleep_now < 20) {
     if (!time_updated)
       state.setState(GET_NTP_TIME);
     else
@@ -883,7 +967,7 @@ void enter_sleep() {
     return;
   }
 
-  sleepNow *= 1000000;
+  sleep_now *= 1000000;
   // Connect D0 to RST to wake up
   pinMode(D0, WAKEUP_PULLUP);
   
@@ -892,11 +976,25 @@ void enter_sleep() {
   pinCtrl.stopLeds();
 
   save_flash();
-  save_uptime(sleepNow);
+  save_uptime(sleep_now);
   rtcmem_set_magic(MAGIC_ID);
-  LOG(1, "Entering sleep for %llu seconds (%d)\n", (sleepNow / 1000000), wake_num);
+  LOG(1, "Entering sleep for %llu seconds (%d)\n", (sleep_now / 1000000), wake_num);
   delay(10);
-  ESP.deepSleep((sleepNow - 10000), WAKE_RF_DEFAULT);
+  if (batState == BATTERY_LOW ||
+      batState == BATTERY_VERY_LOW) {
+    /* 
+     * Prepare the system for deep-sleep for sleep_now microseconds, but with intermitent 
+     * wakeups once every 3 seconds.
+     */
+    u16 sleep_secs = (sleep_now / 1000000);
+    if (batState == BATTERY_VERY_LOW)
+      sleep_secs |= 0x8000;
+    rtcmem_set_lpsleep_id(MAGIC_ID);
+    rtcmem_set_lpsleep_secs(sleep_secs);
+    
+    ESP.deepSleep((3000000 - 10000), WAKE_RF_DEFAULT);
+  }
+  ESP.deepSleep((sleep_now - 10000), WAKE_RF_DEFAULT);
 }
 
 ICACHE_RAM_ATTR void checkPIR() {
@@ -987,21 +1085,72 @@ void check_battery() {
   } else {
     batState = BATTERY_ABSENT;
   }
+  
+  //LOG(1, "DEBUG: forcing battery to BATTERY_VERY_LOW");
+  //batState = BATTERY_VERY_LOW; // For debugging only
+  
   digitalWrite(pin_ctrl_stat1, HIGH);
 }
 
 void reset_i2c() {
   LOG(2, "Resetting i2c lines\n");
-  // Reset i2c lines
+  /*
+   * Since we have a non-i2c device (like the HX711 scale controller) on the i2c lines, 
+   * we need to bring the i2c lines in a state where an actual i2c device (like the RTC)
+   * can be accessed. 
+   * Since ESP8266 doesn't have support for Wire::end(), we'll just do it here, manually.
+   */
+  Wire.endTransmission();
   digitalWrite(I2C_SDA, LOW);
   digitalWrite(I2C_SCL, LOW);
-  delay(1);
+  delay(5);
   rtcmem_set_i2c_reset(true);
 }
 
+void do_lowbat_sleep(bool bat_very_low, u16 sleep_secs) {
+  u8 num_blinks = 2;
+  u8 del = 100;
+  
+  if (bat_very_low) {
+    num_blinks = 4;
+    del = 75;
+  }
+  for (u8 i = 0; i < num_blinks; i++) {
+    digitalWrite(pin_led_status, HIGH);
+    delay(del);
+    digitalWrite(pin_led_status, LOW);
+    delay(del);
+  }
+  if (sleep_secs > 3) {
+    sleep_secs -= 3;
+    rtcmem_set_lpsleep_id(MAGIC_ID);
+    if (bat_very_low)
+      sleep_secs |= 0x8000;
+    rtcmem_set_lpsleep_secs(sleep_secs);
+  } else {
+    rtcmem_set_lpsleep_id(0);
+  }
+  
+  ESP.deepSleep(3000000, WAKE_RF_DEFAULT);
+}
+
 void setup() {
+  pinMode(pin_btn_control, INPUT);
+  pinMode(pin_led_status, OUTPUT);
+  bool btn_wake = (digitalRead(pin_btn_control) == LOW);
+
+  if (!btn_wake && rtcmem_get_lpsleep_id() == MAGIC_ID) {
+    u16 sleep_secs = rtcmem_get_lpsleep_secs();
+    bool bat_very_low = false;
+    if (sleep_secs & 0x8000) {
+      bat_very_low = true;
+      sleep_secs &= ~(0x8000);
+    }
+    if (sleep_secs > 0)
+      do_lowbat_sleep(bat_very_low, sleep_secs);
+  }
+
   u32 magic_id;
-  bool btn_wake = false;
   bool reset_ntp = false;
   bool rtc_init = false;
 
@@ -1009,16 +1158,12 @@ void setup() {
   pinMode(pin_ctrl_stat2, OUTPUT);
   pinMode(pin_ctrl_mux, OUTPUT);
   pinMode(pin_ctrl_servo, OUTPUT);
-  pinMode(pin_led_status, OUTPUT);
-  pinMode(pin_btn_control, INPUT);
 
   /* 
    * Put the mux pin to H in order to disable the RST mux while awake.
    * This will prevent resetting us while pressing the button.
    */
   digitalWrite(pin_ctrl_mux, HIGH);
-  
-  btn_wake = (digitalRead(pin_btn_control) == LOW);
   
   // put your setup code here, to run once:
   Serial.begin(115200);
@@ -1113,8 +1258,13 @@ void setup() {
   if (haveRTC && !rtc_init) {
     if (rtcmem_get_i2c_reset())
       reset_i2c();
-    if (!rtc.begin())
-        LOG(1, "RTC probe failed in wakeup!\n");
+    // Sometimes it seems to fail, so retry up to 5 times if it fails
+    for (u8 i = 1; i <= 5; i++) {
+      if (!rtc.begin())
+          LOG(1, "RTC probe failed in wakeup: %u\n", i);
+      else
+        break;
+    }
     rtcmem_set_i2c_reset(false);
   }
   update_rtc();
@@ -1145,7 +1295,7 @@ void setup() {
   }
 
   timeClient.begin();
-  timeClient.setTimeOffset(HOURS(2+dst));
+  
   if (btn_wake) {
     LOG(1, "Button wake-up\n");
     state.setState({BTN_WAKE_UP, 500});
@@ -1184,22 +1334,9 @@ void loop() {
         state.setState(BEGIN_OTA);
         return;
       }
-      {
-        u8 num_blinks = 1;
-        u8 del = 100;
-        if (batState == BATTERY_LOW) {
-          num_blinks = 2;
-        } else if (batState == BATTERY_VERY_LOW) {
-          num_blinks = 4;
-          del = 75;
-        }
-        for (u8 i = 0; i < num_blinks; i++) {
-            digitalWrite(pin_led_status, HIGH);
-            delay(del);
-            digitalWrite(pin_led_status, LOW);
-            delay(del);
-          }
-      }
+      digitalWrite(pin_led_status, HIGH);
+      delay(100);
+      digitalWrite(pin_led_status, LOW);
       wifi_set_sleep_type(LIGHT_SLEEP_T);
       delay(3000);
       return;
@@ -1258,8 +1395,8 @@ void loop() {
       if (haveRTC) {
         u32 rtc_updated = 0;
         system_rtc_mem_read(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
-        if ((rtcTime - rtc_updated) > HOURS(720)) {
-          LOG(2, "RTC last updated %llus ago\n", rtcTime - rtc_updated);
+        if ((rtcTime - rtc_updated) > HOURS(rtcCal * 24)) {
+          LOG(2, "RTC last updated %llus ago. Updating NTP time to calibrate RTC.\n", rtcTime - rtc_updated);
           state.setState(GET_NTP_TIME);
           return;
         }
@@ -1359,19 +1496,7 @@ void loop() {
 #endif
         
         stopTrigger = JOB_TRIGGER_NONE;
-        bool jobDone = state.expired();
-        /*
-        if (haveScale) {
-          jobDone = false;
-          if (scale.is_ready()) {
-            u8 w = round(scale.get_units(5) + 0.49);
-            jobDone = (w >= jobGrams);
-            if (jobDone)
-              LOG(1, "Weight achieved: %u\n", w);
-          }
-        }
-        */
-        if ((servo.read() == SERVO_MOVE_FW) && jobDone) {
+        if ((servo.read() == SERVO_MOVE_FW) && state.expired()) {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
           LOG(1, "Stopping servo (state expired): total run: %ums\n", lastRunDuration);
           stopTrigger = JOB_TRIGGER_AUTO;
