@@ -56,9 +56,8 @@ extern "C" {
 #endif
 #endif
 
-#define MAP_GRAMS(g) ((GRT + g_data.calibration) * g)
+#define MAP_GRAMS(g) ((GRT + gData.calibration) * g)
 
-#define FPM_SLEEP_MAX_TIME           0xFFFFFFF
 #define MAX_UINT      0x7fffffff
 #define HR_SEC        3600
 #define HOURS(x)      ((x) * HR_SEC)
@@ -69,13 +68,13 @@ extern "C" {
 //#define SLEEP_SECS    60 // for deep-sleep debugging
 #define MODEM_SLEEP 1
 
-u16 wake_num = 0; // number of wake-ups since power-on
-u16 crash_num = 0; // number of crashes since power-on
-u8 ntpFail = 0;
-bool first_boot = false;
-bool time_updated = false;
 bool haveScale = false;
 bool haveRTC = false;
+u16 wakeNum = 0; // number of wake-ups since power-on
+u16 crashNum = 0; // number of crashes since power-on
+
+u8 ntpFail = 0;  // number of failed NTP queries
+bool timeUpdated = false; // indicator that the current time has been updated, either from RTC or NTP
 u64 rtcMillis; // Elapsed millis from boot until we got the actual time
 u64 rtcUptime; // Elapsed millis since we got time from NTP or RTC
 time_t rtcTime; // actual NTP/RTC time
@@ -130,8 +129,8 @@ NTPClient timeClient(ntpUDP);
 #define host_name "config.info"
 #define MYSSID "Pet Feeder"
 
-String *ssid_names; // place-holder for SSID scan results
-u8 ssid_num; // number of scanned SSIDs
+String *ssidNames; // place-holder for SSID scan results
+u8 ssidNum; // number of scanned SSIDs
 
 u8 dst = 0; //daylight saving time
 /* END WiFi configurations */
@@ -172,7 +171,7 @@ typedef struct {
   job_t jobs[MAX_JOBS];
   u32 id;
 } data_t;
-static data_t g_data; // global data to be saved in flash
+static data_t gData; // global data to be saved in flash
 #define DATA_CHKSUM 0xFCECFCEC
 
 // run-time information
@@ -226,9 +225,9 @@ u8 jobGrams;
 #define rtcmem_set_init(ini) \
 {\
   magic_set_bit(ini, 0);\
-  if (g_data.initialized != ini) {\
-    g_data.initialized = ini;\
-    g_data.dirty = true;\
+  if (gData.initialized != ini) {\
+    gData.initialized = ini;\
+    gData.dirty = true;\
   }\
 }
 
@@ -282,6 +281,7 @@ bool update_rtc(time_t ntp = 0) {
 
   DateTime rtc_time = rtc.now();
   rtcTime = rtc_time.unixtime();
+  rtcMillis = millis();
   LOG(1, "RTC date: %02u/%02u/%u %02u:%02u:%02u\n",
       rtc_time.day(), rtc_time.month(), rtc_time.year(),
       rtc_time.hour(), rtc_time.minute(), rtc_time.second());
@@ -382,6 +382,7 @@ bool update_rtc(time_t ntp = 0) {
     system_rtc_mem_write(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
   }
 
+  timeUpdated = true;
   return true;
 }
 
@@ -422,7 +423,7 @@ time_t get_time(bool useNtp = false) {
         update_rtc(now);
       }
       rtcMillis = millis();
-      time_updated = true;
+      timeUpdated = true;
       rtcTime = now;
       return now;
     }
@@ -474,37 +475,37 @@ String html_processor(const String& var) {
     sprintf(c, "%02u", ss);
     ret = String(c);
   } else if (var == "CAL") {
-    ret = String(g_data.calibration);
+    ret = String(gData.calibration);
   } else if (var == "HIDE_BTN") {
-    if (strlen(g_data.wifi_ssid))
+    if (strlen(gData.wifi_ssid))
       ret += "+";
     else
       ret += "-";
   } else if (var == "HIDE_WIFI_CFG") {
-    if (strlen(g_data.wifi_ssid))
+    if (strlen(gData.wifi_ssid))
       ret += " style=\"display:none\"";
     else
       ret += " style=\"display:block\"";
-  } else if (var == "WIFI_PASS" && strlen(g_data.wifi_pass)) {
-    ret = String(g_data.wifi_pass);
+  } else if (var == "WIFI_PASS" && strlen(gData.wifi_pass)) {
+    ret = String(gData.wifi_pass);
   } else if (var == "WIFI_SSIDS") {
-    String ssid = String(g_data.wifi_ssid);
-    if (!ssid_num)
+    String ssid = String(gData.wifi_ssid);
+    if (!ssidNum)
       ret += String("\t\t<option value=\"") + ssid + String("\">") + ssid + String("</option>\n");
-    for (int i = 0; i < ssid_num; i++) {
+    for (int i = 0; i < ssidNum; i++) {
       String sel = ">";
-      if (ssid == ssid_names[i])
+      if (ssid == ssidNames[i])
         sel = " selected>";
-      ret += String("\t\t<option value=\"") + ssid_names[i] + String("\"") + sel + ssid_names[i] + String("</option>\n");
+      ret += String("\t\t<option value=\"") + ssidNames[i] + String("\"") + sel + ssidNames[i] + String("</option>\n");
     }
   } else if (var.startsWith("SLEEP_")) {
     u8 slp = var[var.length() - 1] - '0';
-    if (g_data.sleep_type == slp)
+    if (gData.sleep_type == slp)
         ret = String(" checked");
   } else if (var.startsWith("TD")) {
     u8 id = var[var.length() - 1] - '0';
     if (id < MAX_JOBS) {
-      job_t *job = &g_data.jobs[id];
+      job_t *job = &gData.jobs[id];
       if (job->grams)
         ret = "block";
       else
@@ -513,7 +514,7 @@ String html_processor(const String& var) {
   } else if (var.startsWith("TM")) {
     u8 id = var[var.length() - 1] - '0';
     if (id < MAX_JOBS) {
-      job_t *job = &g_data.jobs[id];
+      job_t *job = &gData.jobs[id];
       if (job->grams) {
         sprintf(c, "%02d", job->hh);
         ret = String(c) + ":";
@@ -524,7 +525,7 @@ String html_processor(const String& var) {
   } else if (var.startsWith("GR")) {
     u8 id = var[var.length() - 1] - '0';
     if (id < MAX_JOBS) {
-      job_t *job = &g_data.jobs[id];
+      job_t *job = &gData.jobs[id];
       if (job->grams)
         ret = String(job->grams);
     }
@@ -534,53 +535,53 @@ String html_processor(const String& var) {
 }
 
 void load_flash(bool first_boot = false) {
-  EEPROM.begin(sizeof(g_data));
-  if (g_data.corrupted)
+  EEPROM.begin(sizeof(gData));
+  if (gData.corrupted)
     return;
-  EEPROM.get(0, g_data);
-  LOG(1, "Data loaded from flash (saved size: %d, actual size:%d, id:0x%08X)\n", g_data.sz, sizeof(g_data), g_data.id);
-  if (g_data.sz != sizeof(g_data) || g_data.id != DATA_CHKSUM) {
+  EEPROM.get(0, gData);
+  LOG(1, "Data loaded from flash (saved size: %d, actual size:%d, id:0x%08X)\n", gData.sz, sizeof(gData), gData.id);
+  if (gData.sz != sizeof(gData) || gData.id != DATA_CHKSUM) {
     LOG(1, "Flash data corrupted! Resetting data\n");
-    memset(&g_data, 0, sizeof(g_data));
-    g_data.corrupted = true;
-    EEPROM.put(0, g_data);
+    memset(&gData, 0, sizeof(gData));
+    gData.corrupted = true;
+    EEPROM.put(0, gData);
     EEPROM.end();
     return;
   }
-  g_data.dirty = false;
+  gData.dirty = false;
   if (first_boot) {
     //wifi_to_rtc();
-    rtcmem_set_init(g_data.initialized);
-    if (g_data.sleep_type == DEEP_SLEEP)
+    rtcmem_set_init(gData.initialized);
+    if (gData.sleep_type == DEEP_SLEEP)
       rtcmem_set_sleep(true);
   }
-  if (!g_data.sleep_type) {
-    g_data.sleep_type = DEEP_SLEEP;
-    g_data.dirty = true;
+  if (!gData.sleep_type) {
+    gData.sleep_type = DEEP_SLEEP;
+    gData.dirty = true;
   }
 }
 
 void save_flash() {
-  if (!g_data.dirty)
+  if (!gData.dirty)
     return;
     
-  g_data.sz = sizeof(g_data);
-  g_data.corrupted = false;
-  g_data.dirty = false;
-  g_data.id = DATA_CHKSUM;
+  gData.sz = sizeof(gData);
+  gData.corrupted = false;
+  gData.dirty = false;
+  gData.id = DATA_CHKSUM;
   
-  EEPROM.put(0, g_data);
+  EEPROM.put(0, gData);
   EEPROM.commit();
   LOG(1, "Data saved to flash!\n");
 }
 
 bool wifi_connect() {
-  if (!strlen(g_data.wifi_ssid) || !strlen(g_data.wifi_pass))
+  if (!strlen(gData.wifi_ssid) || !strlen(gData.wifi_pass))
     load_flash();
-  if (!strlen(g_data.wifi_ssid) || !strlen(g_data.wifi_pass))
+  if (!strlen(gData.wifi_ssid) || !strlen(gData.wifi_pass))
     return false;
 
-  LOG(1, "WiFi connect: SSID=%s PASS=%s\n", g_data.wifi_ssid, g_data.wifi_pass);
+  LOG(1, "WiFi connect: SSID=%s PASS=%s\n", gData.wifi_ssid, gData.wifi_pass);
   if (staticIP[0]) {
     IPAddress gateway(staticIP[0], staticIP[1], staticIP[2], 1);
     IPAddress subnet(255, 255, 255, 0);
@@ -592,7 +593,7 @@ bool wifi_connect() {
   WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.hostname(MYSSID);     
-  WiFi.begin(g_data.wifi_ssid, g_data.wifi_pass);
+  WiFi.begin(gData.wifi_ssid, gData.wifi_pass);
 
   return true;
 }
@@ -643,19 +644,19 @@ void handleConfig(AsyncWebServerRequest *request) {
       sleep_type = argV.toInt();
     } else if (argN == "cal") {
       s8 cal = argV.toInt();
-      if (cal != g_data.calibration) {
+      if (cal != gData.calibration) {
         if (cal < 0 && abs(cal) < (GRT / 2))
           cal = - (GRT / 2);
-        g_data.calibration = cal;
-        g_data.dirty = true;
+        gData.calibration = cal;
+        gData.dirty = true;
         msg += "<br>Saved feeder calibration: " + argV;
       }
     } else if (argN.startsWith("tm")) {
       u8 id = argN[argN.length() - 1] - '0';
       if (!id && !argV.length()) {
         // erase all jobs
-        LOG(1, "Erasing %u jobs: total size: %u\n", sizeof(g_data.jobs) / sizeof(job_t), sizeof(g_data.jobs));
-        memset(&g_data.jobs, 0, sizeof(g_data.jobs));
+        LOG(1, "Erasing %u jobs: total size: %u\n", sizeof(gData.jobs) / sizeof(job_t), sizeof(gData.jobs));
+        memset(&gData.jobs, 0, sizeof(gData.jobs));
         msg += "<br>Erased all previous jobs! ";
       } else if (id < MAX_JOBS && argV != "") {
         int c = argV.indexOf(':');
@@ -668,11 +669,11 @@ void handleConfig(AsyncWebServerRequest *request) {
           if (hh > 23 || mm > 59) {
             msg += "<br>Invalid job time: " + argV;
           } else {
-            g_data.jobs[id].hh = hh;
-            g_data.jobs[id].mm = mm;
-            g_data.dirty = true;
+            gData.jobs[id].hh = hh;
+            gData.jobs[id].mm = mm;
+            gData.dirty = true;
             msg += "<br>Saved job time: " + argV;
-            LOG(1, "Saving job[%u] time: %u:%u\n", id, g_data.jobs[id].hh, g_data.jobs[id].mm); 
+            LOG(1, "Saving job[%u] time: %u:%u\n", id, gData.jobs[id].hh, gData.jobs[id].mm); 
           }
         }
       }
@@ -682,18 +683,18 @@ void handleConfig(AsyncWebServerRequest *request) {
        int val = argV.toInt();
         if (val > 255)
           val = 255;
-        g_data.jobs[id].grams = val;
-        g_data.dirty = true;
+        gData.jobs[id].grams = val;
+        gData.dirty = true;
         msg += ", grams: " + String(val);
-        LOG(1, "Saving job[%u] grams: %u\n", id, g_data.jobs[id].grams);
+        LOG(1, "Saving job[%u] grams: %u\n", id, gData.jobs[id].grams);
       }
     }
   }
   if (lastJobId != -1)
     for (int i = lastJobId + 1; i < MAX_JOBS; i++)
-      g_data.jobs[i] = {0, 0, 0};
+      gData.jobs[i] = {0, 0, 0};
 
-  if ((wifi_ssid == "" || wifi_pass == "") && !strlen(g_data.wifi_ssid)) {
+  if ((wifi_ssid == "" || wifi_pass == "") && !strlen(gData.wifi_ssid)) {
     html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head><body>";
     html += "<h2 style=\"font-size: 1.4rem\">";
     html += "WiFi network name and/or pass not provided!";
@@ -702,32 +703,32 @@ void handleConfig(AsyncWebServerRequest *request) {
     return;
   }
 
-  if (wifi_ssid != String(g_data.wifi_ssid) ||
-      wifi_pass != String(g_data.wifi_pass)) {
-    memset(g_data.wifi_ssid, 0, sizeof(g_data.wifi_ssid));
-    wifi_ssid.toCharArray(g_data.wifi_ssid, wifi_ssid.length() + 1);
-    memset(g_data.wifi_pass, 0, sizeof(g_data.wifi_pass));
-    wifi_pass.toCharArray(g_data.wifi_pass, wifi_pass.length() + 1);
-    g_data.dirty = true;
+  if (wifi_ssid != String(gData.wifi_ssid) ||
+      wifi_pass != String(gData.wifi_pass)) {
+    memset(gData.wifi_ssid, 0, sizeof(gData.wifi_ssid));
+    wifi_ssid.toCharArray(gData.wifi_ssid, wifi_ssid.length() + 1);
+    memset(gData.wifi_pass, 0, sizeof(gData.wifi_pass));
+    wifi_pass.toCharArray(gData.wifi_pass, wifi_pass.length() + 1);
+    gData.dirty = true;
     msg += "WiFi network saved as: " + wifi_ssid + "<br>";
     state.setState(WIFI_TEST);
   }
   
-  if (sleep_type != 0 && sleep_type != g_data.sleep_type) {
-    g_data.dirty = true;
+  if (sleep_type != 0 && sleep_type != gData.sleep_type) {
+    gData.dirty = true;
     msg += "<br>Sleep Type saved as: ";
     switch (sleep_type) {
       case 1:
-        g_data.sleep_type = DEEP_SLEEP;
+        gData.sleep_type = DEEP_SLEEP;
         rtcmem_set_sleep(true);
         msg += "Deep Sleep";
         break;
       case 2:
-        g_data.sleep_type = LIGHT_SLEEP;
+        gData.sleep_type = LIGHT_SLEEP;
         msg += "Light Sleep";
         break;
       case 3:
-        g_data.sleep_type = ALWAYS_ON;        
+        gData.sleep_type = ALWAYS_ON;        
         msg += "Always On";
         break;
     }
@@ -770,7 +771,7 @@ void handleStatus(AsyncWebServerRequest *request) {
   html += "<p class=\"time\">Date: " + String(ctime(&now)) + "</p>";
   sprintf(tmp, "<p>Uptime: %udays %02u:%02u:%02u </p>", dd, hh, mm, ss);
   html += String(tmp);
-  sprintf(tmp, "<p>Since last boot: Wake-ups: %u | Crashes: %u</p>", wake_num, crash_num);
+  sprintf(tmp, "<p>Since last boot: Wake-ups: %u | Crashes: %u</p>", wakeNum, crashNum);
   html += String(tmp);
   sprintf(tmp, "<p>Last run: %02u:%02u</p>", lastRun.hh, lastRun.mm);
   html += String(tmp);
@@ -803,23 +804,23 @@ void handleStatus(AsyncWebServerRequest *request) {
 bool wifi_config(int mode) {
   if (mode == WIFI_AP) {
     LOG(1, "Starting WiFi scan...\n");
-    ssid_num = WiFi.scanNetworks(false, false);
+    ssidNum = WiFi.scanNetworks(false, false);
     
-    if (ssid_num == 0) {
+    if (ssidNum == 0) {
       LOG(1, "No networks found!\n");
       return false;
-    } else if (ssid_num > 0) {
-      LOG(1, "%d networks found\n", ssid_num);
-      ssid_names = new String[ssid_num];
-      for (int8_t i = 0; i < ssid_num; i++) {
-        ssid_names[i] = WiFi.SSID(i);
-        ssid_names[i].trim();
-        if (ssid_names[i].length() > 2)
-          LOG(1, "%02d: SSID: %s\n", i, ssid_names[i]);
+    } else if (ssidNum > 0) {
+      LOG(1, "%d networks found\n", ssidNum);
+      ssidNames = new String[ssidNum];
+      for (int8_t i = 0; i < ssidNum; i++) {
+        ssidNames[i] = WiFi.SSID(i);
+        ssidNames[i].trim();
+        if (ssidNames[i].length() > 2)
+          LOG(1, "%02d: SSID: %s\n", i, ssidNames[i]);
       }
    
     } else {
-      LOG(1, "WiFi scan error %d\n", ssid_num);
+      LOG(1, "WiFi scan error %d\n", ssidNum);
       return false;
     }
     
@@ -873,7 +874,7 @@ bool check_for_jobs(u64 *timeTillNext = NULL) {
   LOG(3, "Last run: %02u:%02u, this run: %02u:%02u\n",
     lastRun.hh, lastRun.mm, thisRun.hh, thisRun.mm);
   for (u8 i = 0; i < MAX_JOBS; i++) {
-    job_t *nextJob = &g_data.jobs[i];
+    job_t *nextJob = &gData.jobs[i];
     // Check for done jobs
     if (lastRun.hh && t->tm_hour <= lastRun.hh && t->tm_min <= lastRun.mm + 2)
       continue;
@@ -940,12 +941,12 @@ void do_light_sleep() {
 
 void enter_sleep() {
   u64 sleep_now;
-  if (g_data.sleep_type == LIGHT_SLEEP) {
+  if (gData.sleep_type == LIGHT_SLEEP) {
     do_light_sleep();
     return;
   }
 
-  if (g_data.sleep_type != DEEP_SLEEP)
+  if (gData.sleep_type != DEEP_SLEEP)
     return;
 
   sleep_now = SLEEP_SECS;
@@ -960,7 +961,7 @@ void enter_sleep() {
   }
 
   if (sleep_now < 20) {
-    if (!time_updated)
+    if (!timeUpdated)
       state.setState(GET_NTP_TIME);
     else
       do_light_sleep();
@@ -978,7 +979,7 @@ void enter_sleep() {
   save_flash();
   save_uptime(sleep_now);
   rtcmem_set_magic(MAGIC_ID);
-  LOG(1, "Entering sleep for %llu seconds (%d)\n", (sleep_now / 1000000), wake_num);
+  LOG(1, "Entering sleep for %llu seconds (%d)\n", (sleep_now / 1000000), wakeNum);
   delay(10);
   if (batState == BATTERY_LOW ||
       batState == BATTERY_VERY_LOW) {
@@ -995,10 +996,6 @@ void enter_sleep() {
     ESP.deepSleep((3000000 - 10000), WAKE_RF_DEFAULT);
   }
   ESP.deepSleep((sleep_now - 10000), WAKE_RF_DEFAULT);
-}
-
-ICACHE_RAM_ATTR void checkPIR() {
-  LOG(1, "PIR event\n");
 }
 
 /*
@@ -1151,6 +1148,7 @@ void setup() {
   }
 
   u32 magic_id;
+  bool first_boot = false;
   bool reset_ntp = false;
   bool rtc_init = false;
 
@@ -1184,14 +1182,14 @@ void setup() {
   rtcTime = 0;
   rtcUptime = 0;
   magic_id = rtcmem_get_magic();
-  crash_num = rtcmem_get_crashes();
+  crashNum = rtcmem_get_crashes();
   
   if (magic_id != MAGIC_ID) {
     if (magic_id == RUN_MAGIC_ID) {
-      crash_num = rtcmem_get_crashes();
+      crashNum = rtcmem_get_crashes();
       LOG(1, "Oooups! Just had a crash...\n");
-      crash_num++;
-      rtcmem_set_crashes(crash_num);
+      crashNum++;
+      rtcmem_set_crashes(crashNum);
       reset_ntp = true;
     } else if (magic_id == OTA_MAGIC_ID) {
       LOG(1, "Restart after OTA\n");
@@ -1238,12 +1236,12 @@ void setup() {
 
   dst = !!rtcmem_get_dst();
   load_flash(first_boot);
-  wake_num = rtcmem_get_wakes();
+  wakeNum = rtcmem_get_wakes();
   if (magic_id == MAGIC_ID) {
-    wake_num++;
-    rtcmem_set_wakes(wake_num);
+    wakeNum++;
+    rtcmem_set_wakes(wakeNum);
   }
-  crash_num = rtcmem_get_crashes();
+  crashNum = rtcmem_get_crashes();
   rtcmem_get_lastRun(lastRun);
   haveRTC = rtcmem_get_rtc();
   haveScale = rtcmem_get_scale();
@@ -1276,10 +1274,10 @@ void setup() {
     servoStallCurrent = map(SERVO_MOVE_FW, 0, 40, 700, 400);
 
   time_t now = get_time();
-  LOG(1, "Wake-ups: %u\n", wake_num);
-  LOG(1, "Crashes: %u\n", crash_num);
-  LOG(1, "Initialized: %d\n", g_data.initialized);
-  LOG(1, "Sleep type: %d\n", g_data.sleep_type);
+  LOG(1, "Wake-ups: %u\n", wakeNum);
+  LOG(1, "Crashes: %u\n", crashNum);
+  LOG(1, "Initialized: %d\n", gData.initialized);
+  LOG(1, "Sleep type: %d\n", gData.sleep_type);
   LOG(1, "DST: %u\n", dst);
   LOG(1, "RTC present: %s\n", haveRTC?"TRUE":"FALSE");
   LOG(1, "Scale present: %s\n", haveScale?"TRUE":"FALSE");
@@ -1287,9 +1285,9 @@ void setup() {
   LOG(1, "NTP/RTC time: %llu -> %s", rtcTime, ctime(&rtcTime));
   LOG(1, "Servo stall current: %u\n", servoStallCurrent);
   LOG(1, "Last Run: %02u:%02u\n", lastRun.hh, lastRun.mm);
-  LOG(1, "WiFi config: SSID=%s PASS=%s\n", g_data.wifi_ssid, g_data.wifi_pass);
+  LOG(1, "WiFi config: SSID=%s PASS=%s\n", gData.wifi_ssid, gData.wifi_pass);
   for (int i = 0; i < MAX_JOBS; i++) {
-    job_t *job = &g_data.jobs[i];
+    job_t *job = &gData.jobs[i];
     if (job->grams)
       LOG(1, "Active job: %02u:%02u, grams: %u\n", job->hh, job->mm, job->grams);
   }
@@ -1303,7 +1301,7 @@ void setup() {
     state.setState(RUN_IDLE);
   }
 
-  if (g_data.corrupted || !strlen(g_data.wifi_ssid) || !strlen(g_data.wifi_pass))
+  if (gData.corrupted || !strlen(gData.wifi_ssid) || !strlen(gData.wifi_pass))
     state.setState(CONFIGURE);
 }
 
@@ -1594,9 +1592,9 @@ void loop() {
         LOG(1, "Connected to: %s (after %.02f seconds)\n", WiFi.SSID(), (double)elapsed / 1000);
         LOG(1, "IP address: %s; Hostname: %s\n", staticIP.toString().c_str(), WiFi.hostname().c_str());
 
-        if (ssid_num > 0) {
-          delete[] ssid_names;
-          ssid_num = 0;
+        if (ssidNum > 0) {
+          delete[] ssidNames;
+          ssidNum = 0;
         }
         // since we are connected to wifi, update rtcTime
         //time_t now = get_time(true);
