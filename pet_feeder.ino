@@ -34,7 +34,7 @@ extern "C" {
 // Backward speed (range: 0-80 for 100% - 0%)
 #define SERVO_MOVE_BW 0
 #ifdef DOG_FEEDER
-#define GRT (60)
+#define GRT (50)
 #elif CAT_FEEDER
 // Not tested yet!
 #define GRT (220)
@@ -78,7 +78,7 @@ bool timeUpdated = false; // indicator that the current time has been updated, e
 u64 rtcMillis; // Elapsed millis from boot until we got the actual time
 u64 rtcUptime; // Elapsed millis since we got time from NTP or RTC
 time_t rtcTime; // actual NTP/RTC time
-u8 rtcCal = 1; // number of days to calibrate RTC (may increase during calibration process)
+u8 rtcCal = 30; // number of days to calibrate RTC (may increase during calibration process)
 #define RTC_DRIFT_EN 0
 
 /* Digital I/O */
@@ -1017,7 +1017,7 @@ u16 read_adc(u16 r = 0) {
   u64 msec = millis();
   u64 sec = msec / 1000;
   msec %= 1000;
-  LOG(3, "@%llu.%llus ADC value: %u, mV: %u (maxV: %u)\n", sec, msec, val, mV, (320 + r) * 10);
+  LOG(4, "@%llu.%llus ADC value: %u, mV: %u (maxV: %u)\n", sec, msec, val, mV, (320 + r) * 10);
   return mV;
 }
 
@@ -1258,10 +1258,12 @@ void setup() {
       reset_i2c();
     // Sometimes it seems to fail, so retry up to 5 times if it fails
     for (u8 i = 1; i <= 5; i++) {
-      if (!rtc.begin())
+      if (!rtc.begin()) {
           LOG(1, "RTC probe failed in wakeup: %u\n", i);
-      else
+          delay(50);
+      } else {
         break;
+      }
     }
     rtcmem_set_i2c_reset(false);
   }
@@ -1498,7 +1500,9 @@ void loop() {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
           LOG(1, "Stopping servo (state expired): total run: %ums\n", lastRunDuration);
           stopTrigger = JOB_TRIGGER_AUTO;
-        } else if (!state.getWaitTime() && startTrigger == JOB_TRIGGER_BUTTON && getAction(button, BTN_ACT_RELEASED)) {
+        } else if (!state.getWaitTime() &&
+                   startTrigger == JOB_TRIGGER_BUTTON &&
+                   (getAction(button, BTN_ACT_RELEASED) || !buttonPressed(button))) {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
           LOG(1, "Stopping servo (push button): total run: %ums\n", lastRunDuration);
           stopTrigger = JOB_TRIGGER_BUTTON;

@@ -333,13 +333,15 @@ u8 ICACHE_RAM_ATTR getPinState(u8 pin) {
 }
 
 bool buttonPressed(ButtonManager *btn, u8 state) {
+  if (state == 0xff)
+    state = digitalRead(btn->pin);
   if (btn->pull == BTN_PULLDOWN)
     return (state == HIGH);
     
   return (state == LOW);
 }
 
-#define FLIP_DELAY 500
+#define FLIP_DELAY 400
 #define MIN_DELAY 20
 // Checks if button changed state
 ICACHE_RAM_ATTR void checkButtonState(ButtonManager &btn) {
@@ -355,40 +357,48 @@ ICACHE_RAM_ATTR void checkButtonState(ButtonManager &btn) {
   u64 trigger = millis();
   u32 curDelay = trigger - btn.lastTrigger;
 
+  /*
   if ((!buttonPressed(&btn, newState) && curDelay < MIN_DELAY * 2) ||
       (buttonPressed(&btn, newState) && curDelay < MIN_DELAY))
       return;
+      */
       
+  if (curDelay < MIN_DELAY) {
+    btn.lastAction = buttonPressed(&btn, newState)?BTN_ACT_PRESSED:BTN_ACT_RELEASED;
+    btn.curState = newState;
+    return;
+  }
+  
   u16 flip_delay = FLIP_DELAY;
  
   if (buttonPressed(&btn, newState) && !buttonPressed(&btn, btn.curState) &&
       buttonPressed(&btn, btn.prevState) && (curDelay < flip_delay)) {
     if (btn.type == BTN_TYPE_LOCKING) {
-      LOG(2, "LOCKING: Button flipped ON! (delay: %u)\n", curDelay);
+      LOG(3, "LOCKING: Button flipped ON! (delay: %u)\n", curDelay);
       btn.lastAction = BTN_ACT_FLIPPED_ON;
     } else {
-      LOG(2, "MOMENTARY: Button pressed after single tap! (delay: %u)\n", curDelay);
+      LOG(3, "MOMENTARY: Button pressed after single tap! (delay: %u)\n", curDelay);
       btn.lastAction = BTN_ACT_SINGLE_TAP_ON;
     }
   } else if (!buttonPressed(&btn, newState) && buttonPressed(&btn, btn.curState) &&
              !buttonPressed(&btn, btn.prevState) && (curDelay < flip_delay)) {
     if (btn.type == BTN_TYPE_LOCKING) {
-      LOG(2, "LOCKING: Button flipped OFF! (delay: %u)\n", curDelay);
+      LOG(3, "LOCKING: Button flipped OFF! (delay: %u)\n", curDelay);
       btn.lastAction = BTN_ACT_FLIPPED_OFF;
     } else {
       if (btn.lastAction == BTN_ACT_SINGLE_TAP_ON) {
-        LOG(2, "MOMENTARY: Button double tap! (delay: %u)\n", curDelay);
+        LOG(3, "MOMENTARY: Button double tap! (delay: %u)\n", curDelay);
         btn.lastAction = BTN_ACT_DOUBLE_TAP;
       } else {
-        LOG(2, "MOMENTARY: Button single tap! (delay: %u)\n", curDelay);
+        LOG(3, "MOMENTARY: Button single tap! (delay: %u)\n", curDelay);
         btn.lastAction = BTN_ACT_SINGLE_TAP;
       }
     }
-  } else if (buttonPressed(&btn, btn.curState) && !buttonPressed(&btn, newState) && curDelay > flip_delay) {
-    LOG(2, "Button released! (delay: %u)\n", curDelay);
+  } else if (buttonPressed(&btn, btn.curState) && !buttonPressed(&btn, newState)) {
+    LOG(3, "Button released! (delay: %u)\n", curDelay);
     btn.lastAction = BTN_ACT_RELEASED;
-  } else if (!buttonPressed(&btn, btn.curState) && buttonPressed(&btn, newState) && curDelay > flip_delay) {
-      LOG(2, "Button pressed! (delay: %u)\n", curDelay);
+  } else if (!buttonPressed(&btn, btn.curState) && buttonPressed(&btn, newState)) {
+      LOG(3, "Button pressed! (delay: %u)\n", curDelay);
       btn.lastAction = BTN_ACT_PRESSED;
   }
   

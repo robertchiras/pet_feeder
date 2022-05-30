@@ -158,6 +158,7 @@ typedef struct button_manager {
 } ButtonManager;
 
 u8 getPinState(u8 pin);
+bool buttonPressed(ButtonManager *btn, u8 state = 0xff);
 ICACHE_RAM_ATTR void checkButtonState(ButtonManager &btn);
 ICACHE_RAM_ATTR void checkButtonState_0();
 ICACHE_RAM_ATTR void checkButtonState_1();
