@@ -357,17 +357,20 @@ ICACHE_RAM_ATTR void checkButtonState(ButtonManager &btn) {
   u64 trigger = millis();
   u32 curDelay = trigger - btn.lastTrigger;
 
-  /*
-  if ((!buttonPressed(&btn, newState) && curDelay < MIN_DELAY * 2) ||
-      (buttonPressed(&btn, newState) && curDelay < MIN_DELAY))
-      return;
-      */
-      
+  /* Debouncing mechanism */
   if (curDelay < MIN_DELAY) {
+    //LOG(3, "Debouncing state: %d -> %d (delay: %u)\n", btn.curState, newState, curDelay);
+    if (btn.bounceAction == BTN_ACT_UNDEFINED)
+      btn.bounceAction = btn.lastAction;
     btn.lastAction = buttonPressed(&btn, newState)?BTN_ACT_PRESSED:BTN_ACT_RELEASED;
     btn.curState = newState;
     return;
   }
+  if (btn.bounceAction != BTN_ACT_UNDEFINED) {
+    btn.lastAction = btn.bounceAction;
+    btn.bounceAction = BTN_ACT_UNDEFINED;
+  }
+  /* End Debouncing */
   
   u16 flip_delay = FLIP_DELAY;
  
@@ -480,6 +483,7 @@ ButtonManager *installButton(u8 pin, ButtonType type, ButtonPull pull) {
   button->pull = pull;
   button->pin = pin;
   button->curState = digitalRead(pin);
+  button->bounceAction = BTN_ACT_UNDEFINED;
   
   switch (id) {
     case 0:

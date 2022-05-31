@@ -871,14 +871,14 @@ bool check_for_jobs(u64 *timeTillNext = NULL) {
     *timeTillNext = MAX_UINT;
   t = localtime(&now);
   run_time_t thisRun = { t->tm_hour, t->tm_min };
-  LOG(3, "Last run: %02u:%02u, this run: %02u:%02u\n",
+  LOG(4, "Last run: %02u:%02u, this run: %02u:%02u\n",
     lastRun.hh, lastRun.mm, thisRun.hh, thisRun.mm);
   for (u8 i = 0; i < MAX_JOBS; i++) {
     job_t *nextJob = &gData.jobs[i];
     // Check for done jobs
     if (lastRun.hh && t->tm_hour <= lastRun.hh && t->tm_min <= lastRun.mm + 2)
       continue;
-    LOG(3, "Checking job: %02u:%02u, grams: %u\n",
+    LOG(4, "Checking job: %02u:%02u, grams: %u\n",
         nextJob->hh, nextJob->mm, nextJob->grams);
     if (!nextJob->grams || i == MAX_JOBS - 1) {
       if (lastRun.hh || lastRun.mm) {
@@ -900,7 +900,7 @@ bool check_for_jobs(u64 *timeTillNext = NULL) {
       secs *= 3600;
       secs += (nextJob->mm - t->tm_min) * 60;
       secs -= t->tm_sec;
-      LOG(3, "Time till this job: %us\n", secs);
+      LOG(4, "Time till this job: %us\n", secs);
       if (!*timeTillNext || secs < *timeTillNext)
         *timeTillNext = secs;
     }

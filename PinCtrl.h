@@ -152,6 +152,7 @@ typedef struct button_manager {
   ButtonPull pull;
   ButtonType type;
   ButtonAction lastAction;
+  ButtonAction bounceAction;
   u64 lastTrigger;
   u8 prevState;
   u8 curState;
