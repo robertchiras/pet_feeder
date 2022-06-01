@@ -212,6 +212,7 @@ u64 lastTurnMillis;
 u64 lastStallMillis;
 u32 lastRunDuration;
 u8 stallCheckNum;
+u16 peakCurrent;
 // Stall current in mili-amps (this will be smaller for smaller angular speeds)
 u16 servoStallCurrent = 700;
 
@@ -1501,6 +1502,7 @@ void loop() {
       LOG(1, "Starting servo\n");
       servo.attach(pin_ctrl_servo);
       lastTurnMillis = lastStallMillis = lastStartMillis = stallCheckNum = 0;
+      peakCurrent = 0;
       lastRunTime = get_time();
       state.setState({RUN_SERVO, state.getWaitTime()});
       lastRunMillis = millis();
@@ -1512,6 +1514,8 @@ void loop() {
         delay(10);
         u16 mA = read_adc();
         u64 currentMillis = millis();
+        if (mA > peakCurrent)
+          peakCurrent = mA;
         // We have a 1 ohm current sense resistor, so current = voltage
         // Also, allow the servo to start (100ms should do)
         if (mA > servoStallCurrent && currentMillis - lastStartMillis > 100)
@@ -1562,13 +1566,13 @@ void loop() {
         stopTrigger = JOB_TRIGGER_NONE;
         if ((servo.read() == SERVO_MOVE_FW) && state.expired()) {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
-          LOG(1, "Stopping servo (state expired): total run: %ums\n", lastRunDuration);
+          LOG(1, "Stopping servo (state expired): total run: %u ms, peak current: %u mA\n", lastRunDuration, peakCurrent);
           stopTrigger = JOB_TRIGGER_AUTO;
         } else if (!state.getWaitTime() &&
                    startTrigger == JOB_TRIGGER_BUTTON &&
                    (getAction(button, BTN_ACT_RELEASED) || !buttonPressed(button))) {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
-          LOG(1, "Stopping servo (push button): total run: %ums\n", lastRunDuration);
+          LOG(1, "Stopping servo (push button): total run: %u ms, peak current: %u mA\n", lastRunDuration, peakCurrent);
           stopTrigger = JOB_TRIGGER_BUTTON;
         }
         if (stopTrigger != JOB_TRIGGER_NONE) {
