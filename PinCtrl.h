@@ -70,7 +70,7 @@ typedef enum {
   BEGIN_OTA       = 15,
   OTA_UPDATE      = 16,
   TEST_LEDS,
-  NO_STATUS,
+  NO_STATE,
 } StateEnum;
 
 typedef struct dev_state {
@@ -106,17 +106,17 @@ class DeviceState {
     }
     void extendWaitTime(u32 waitTime) { state.extraWait += waitTime; }
     bool expired() { return state.maxWait && getElapsed() > (state.maxWait + state.extraWait); }
-    void setState(DevState state, DevState success = { NO_STATUS, 0}, DevState fail = { NO_STATUS, 0});
+    void setState(DevState state, DevState success = { NO_STATE, 0}, DevState fail = { NO_STATE, 0});
     void setState(StateEnum state) { setState({state, 0}); }
     void setStateWithNext(DevState state, DevState nextState) {
       setState(state);
       this->nextState = nextState;
     }
     bool setNextState() {
-      if (nextState.state == NO_STATUS)
+      if (nextState.state == NO_STATE)
         return false;
       setState(nextState);
-      nextState = { NO_STATUS, 0};
+      nextState = { NO_STATE, 0};
       return true;
     }
     bool setSuccess();

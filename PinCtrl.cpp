@@ -293,14 +293,14 @@ void DeviceState::setState(DevState state, DevState success, DevState fail) {
 }
 
 bool DeviceState::setSuccess() {
-  if (stateSuccess.state == NO_STATUS)
+  if (stateSuccess.state == NO_STATE)
     return false;
 
   setState(stateSuccess);
 }
 
 bool DeviceState::setFailed() {
-  if (stateFail.state == NO_STATUS)
+  if (stateFail.state == NO_STATE)
     return false;
 
   setState(stateFail);
