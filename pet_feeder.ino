@@ -291,8 +291,8 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
   rtc.readnvram(&(rtcDrift.value), 1, RTC_DRIFT_REG);
   rtc.readnvram(&(rtcDrift.calibration), 1, RTC_DRIFT_CAL);
   LOG(3, "RTC drift control: 0x%02X\n", ctl);
-  LOG(3, "RTC drift value: 0x%02X\n", rtcDrift.value);
-  LOG(3, "RTC drift calibration: 0x%02X\n", rtcDrift.calibration);
+  LOG(3, "RTC drift value: 0x%02X (%ds)\n", rtcDrift.value, BTOI(rtcDrift.value));
+  LOG(3, "RTC drift calibration: 0x%02X (%dd)\n", rtcDrift.calibration, rtcDrift.calibration);
 
   rtcDrift.progress = REG_GET(ctl, 3, 1);
   rtcDrift.enabled = ctl & BIT(0);
