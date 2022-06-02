@@ -1190,9 +1190,12 @@ void do_lowbat_sleep(bool bat_very_low, u16 sleep_secs) {
 }
 
 void setup() {
+  struct rst_info *rtc_info = system_get_rst_info();
+  
   pinMode(pin_btn_control, INPUT);
   pinMode(pin_led_status, OUTPUT);
   bool btn_wake = (digitalRead(pin_btn_control) == LOW);
+  //bool btn_wake = (rtc_info->reason == REASON_EXT_SYS_RST);
 
   if (!btn_wake && rtcmem_get_lpsleep_id() == MAGIC_ID) {
     u16 sleep_secs = rtcmem_get_lpsleep_secs();
@@ -1223,7 +1226,7 @@ void setup() {
   
   // put your setup code here, to run once:
   Serial.begin(115200);
-  LOG(1, "\nSetup\n");
+  LOG(1, "\nSetup (rst reason: %d)\n", rtc_info->reason);
   LOG(1, "Button wake: %u\n", btn_wake);
 
   button = installButton(pin_btn_control, BTN_TYPE_MOMENTARY, BTN_PULLUP);
