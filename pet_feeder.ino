@@ -30,7 +30,7 @@ extern "C" {
 #ifdef VERTICAL_FEEDER
 // Vertical feeder: with paddles
 // Forward speed (range: 100-180 for 0% - 100%)
-#define SERVO_MOVE_FW 140
+#define SERVO_MOVE_FW 145
 // Backward speed (range: 0-80 for 100% - 0%)
 #define SERVO_MOVE_BW 0
 #ifdef DOG_FEEDER
@@ -82,6 +82,7 @@ u16 crashNum = 0; // number of crashes since power-on
    * 4-7: last RTC drift update
    * 
    * drift control structure:
+   * 4-7: check bits
    * 1-3: progress of monitored drifts
    *   0: drift enabled
    */
@@ -274,20 +275,29 @@ void rtcmem_set_lastRun(const run_time_t &rt) {
 #define rtcmem_set_crashes(v) rtcmem_set_u16(STATS_BLK, v, 2)
 
 void rtc_drift_reset(u32 t = 0) {
+#if RTC_DRIFT_EN  
   LOG(1, "Resetting RTC drift regs\n");
   u8 val = 0;
   rtc.writenvram(RTC_DRIFT_CTL, &val, 1);
   rtc.writenvram(RTC_DRIFT_REG, &val, 1);
   rtc.writenvram(RTC_DRIFT_CAL, &val, 1);
   rtc.writenvram(RTC_DRIFT_ST, (u8*)&t, 4);
+#endif  
 }
 
 void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) {
 #if RTC_DRIFT_EN
   u8 ctl;
 
-  rtc.readnvram((u8*)&rtcDrift.last_update, 4, RTC_DRIFT_ST);
   rtc.readnvram(&ctl, 1, RTC_DRIFT_CTL);
+  if (REG_GET(ctl, 7, 4) != 0xA) {
+    rtc_drift_reset();
+    ctl = 0;
+    ctl |= REG_PUT(0xA, 7, 4);
+    rtc.writenvram(RTC_DRIFT_CTL, &ctl, 1);
+    rtc.readnvram(&ctl, 1, RTC_DRIFT_CTL);
+  }
+  rtc.readnvram((u8*)&rtcDrift.last_update, 4, RTC_DRIFT_ST);
   rtc.readnvram(&(rtcDrift.value), 1, RTC_DRIFT_REG);
   rtc.readnvram(&(rtcDrift.calibration), 1, RTC_DRIFT_CAL);
   LOG(3, "RTC drift control: 0x%02X\n", ctl);
@@ -394,8 +404,10 @@ bool update_rtc(time_t ntpTime = 0) {
   DateTime ntp_time((u32)ntpTime);
   DateTime rtc_time = rtc.now();
   rtcTime = rtc_time.unixtime();
+  #if RTC_DRIFT_EN
   rtc.readnvram((u8*)&saved_time, 4, 4);
   diff = rtcTime - saved_time;
+  #endif
   DateTime last_time(saved_time);
   LOG(1, "RTC date: %02u/%02u/%u %02u:%02u:%02u (Last saved: %02u/%02u/%u %02u:%02u:%02u)\n",
       rtc_time.day(), rtc_time.month(), rtc_time.year(),
@@ -423,8 +435,10 @@ bool update_rtc(time_t ntpTime = 0) {
       LOG(1, "NTP time differs from RTC time with more than 30s. Adjusting RTC!\n");
       rtc.adjust(ntp_time);
       rtcTime = ntpTime;
+      #if RTC_DRIFT_EN
       saved_time = ntp_time.unixtime();
       rtc.writenvram(RTC_DRIFT_ST, (u8*)&saved_time, 4);
+      #endif
     } else {
       rtc_drift_update(rtc_time, ntp_time, (byte)diff);
     }
@@ -1526,7 +1540,7 @@ void loop() {
         else
           stallCheckNum = 0;
           
-        if (stallCheckNum > 5) {
+        if (stallCheckNum > 2) {
           stallCheckNum = 0;
           if (servo.read() == SERVO_MOVE_FW) {
             LOG(1, "Servo stall detected in FW direction!\n");
