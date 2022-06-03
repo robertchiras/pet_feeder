@@ -94,8 +94,9 @@ u16 crashNum = 0; // number of crashes since power-on
 
 typedef struct {
   bool enabled;
-  u8 progress;
   byte value;
+  u8 control;
+  u8 progress;
   u8 calibration;
   u32 last_update;
 } TimeDrift;
@@ -285,27 +286,42 @@ void rtc_drift_reset(u32 t = 0) {
 #endif  
 }
 
-void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) {
-#if RTC_DRIFT_EN
-  u8 ctl;
-
-  rtc.readnvram(&ctl, 1, RTC_DRIFT_CTL);
-  if (REG_GET(ctl, 7, 4) != 0xA) {
-    rtc_drift_reset();
-    ctl = 0;
-    ctl |= REG_PUT(0xA, 7, 4);
-    rtc.writenvram(RTC_DRIFT_CTL, &ctl, 1);
-    rtc.readnvram(&ctl, 1, RTC_DRIFT_CTL);
-  }
-  rtc.readnvram((u8*)&rtcDrift.last_update, 4, RTC_DRIFT_ST);
+void rtc_drift_read_regs() {
+  rtc.readnvram(&(rtcDrift.control), 1, RTC_DRIFT_CTL);
   rtc.readnvram(&(rtcDrift.value), 1, RTC_DRIFT_REG);
   rtc.readnvram(&(rtcDrift.calibration), 1, RTC_DRIFT_CAL);
-  LOG(3, "RTC drift control: 0x%02X\n", ctl);
+  rtc.readnvram((u8*)&rtcDrift.last_update, 4, RTC_DRIFT_ST);
+  rtcDrift.progress = REG_GET(rtcDrift.control, 3, 1);
+  rtcDrift.enabled = rtcDrift.control & BIT(0);
+
+  LOG(3, "RTC drift control: 0x%02X (progress: %d, enabled: %d)\n", rtcDrift.control, rtcDrift.progress, rtcDrift.enabled);
   LOG(3, "RTC drift value: 0x%02X (%ds)\n", rtcDrift.value, BTOI(rtcDrift.value));
   LOG(3, "RTC drift calibration: 0x%02X (%dd)\n", rtcDrift.calibration, rtcDrift.calibration);
+  DateTime lu_time(rtcDrift.last_update);
+  LOG(1, "RTC drift last_update: %02u/%02u/%u %02u:%02u:%02u\n",
+        lu_time.day(), lu_time.month(), lu_time.year(),
+        lu_time.hour(), lu_time.minute(), lu_time.second());
+}
 
-  rtcDrift.progress = REG_GET(ctl, 3, 1);
-  rtcDrift.enabled = ctl & BIT(0);
+void rtc_time_update(DateTime t) {
+  rtc.adjust(t);
+  u32 rtc_updated = t.unixtime();
+  system_rtc_mem_write(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
+  #if RTC_DRIFT_EN
+  rtcDrift.last_update = rtc_updated;
+  rtc.writenvram(RTC_DRIFT_ST, (u8*)&rtc_updated, 4);
+  #endif
+}
+
+void rtc_drift_update(DateTime rtc_time, byte cur_drift = 0) {
+#if RTC_DRIFT_EN
+
+  rtc_drift_read_regs();
+  if (REG_GET(rtcDrift.control, 7, 4) != 0xA) {
+    rtc_drift_reset();
+    rtcDrift.control = REG_PUT(0xA, 7, 4);
+    rtc.writenvram(RTC_DRIFT_CTL, &rtcDrift.control, 1);
+  }
 
   int diff = rtcTime - rtcDrift.last_update;
   if (rtcTime - rtcDrift.last_update < HOURS(rtcDrift.calibration * 24)) {
@@ -318,10 +334,8 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
   if (rtcDrift.enabled) {
     TimeSpan ts(BTOI(rtcDrift.value));
     rtc_time = rtc_time - ts;
-    rtc.adjust(rtc_time);
+    rtc_time_update(rtc_time);
     rtcTime = rtc_time.unixtime();
-    rtcDrift.last_update = (u32)rtcTime;
-    rtc.writenvram(RTC_DRIFT_ST, (u8*)&rtcDrift.last_update, 4);
     LOG(1, "Updated RTC time with drift of: %ds: %02u/%02u/%u %02u:%02u:%02u\n", BTOI(rtcDrift.value),
         rtc_time.day(), rtc_time.month(), rtc_time.year(),
         rtc_time.hour(), rtc_time.minute(), rtc_time.second());
@@ -336,8 +350,19 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
     rtc.writenvram(RTC_DRIFT_CAL, &(rtcDrift.calibration), 1);
     LOG(1, "Updated RTC drift calibration period: %u days\n", rtcDrift.calibration);
   }
-  
-  if (rtcDrift.progress < 4) {
+
+  if (!rtcDrift.progress) {
+    TimeSpan ts(BTOI(cur_drift));
+    rtc_time = rtc_time - ts;
+    rtcTime = rtc_time.unixtime();
+    rtc_time_update(rtc_time);
+    rtcDrift.progress++;
+    rtcDrift.control = REG_UPDATE(rtcDrift.control, rtcDrift.progress, 3, 1);
+    rtc.writenvram(RTC_DRIFT_CTL, &(rtcDrift.control), 1);
+    LOG(1, "Starting RTC drift calculation: %02u/%02u/%u %02u:%02u:%02u\n",
+      rtc_time.day(), rtc_time.month(), rtc_time.year(),
+      rtc_time.hour(), rtc_time.minute(), rtc_time.second());
+  } else if (rtcDrift.progress < 5) {
     DateTime last_tm(rtcDrift.last_update);   
     LOG(1, "Saved RTC drift: %ds (last check: %02u/%02u/%u %02u:%02u:%02u)\n", BTOI(rtcDrift.value),
         rtc_time.day(), rtc_time.month(), rtc_time.year(),
@@ -350,26 +375,26 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
     TimeSpan ts(BTOI(rtcDrift.value));
     rtc_time = rtc_time - ts;
     rtcTime = rtc_time.unixtime();
-    rtc.adjust(rtc_time);
-    rtcDrift.last_update = (u32)rtcTime;
-    rtc.writenvram(RTC_DRIFT_ST, (u8*)&rtcDrift.last_update, 4);
+    rtc_time_update(rtc_time);
     LOG(1, "RTC date with drift (%d secs, %u drift checks): %02u/%02u/%u %02u:%02u:%02u\n",
       ts.totalseconds(),
       rtcDrift.progress,
       rtc_time.day(), rtc_time.month(), rtc_time.year(),
-      rtc_time.hour(), rtc_time.minute(), rtc_time.second());      
-
-    ctl |= REG_PUT(rtcDrift.progress, 3, 1);
+      rtc_time.hour(), rtc_time.minute(), rtc_time.second());
+      
+    rtcDrift.control = REG_UPDATE(rtcDrift.control, rtcDrift.progress, 3, 1);
     if (rtcDrift.progress == 3) {
-      ctl |= BIT(0);
+      rtcDrift.control |= BIT(0);
       rtcDrift.calibration = 30;
       LOG(1, "Updating RTC calibration period: %u days\n", rtcDrift.calibration);
       rtc.writenvram(RTC_DRIFT_CAL, &(rtcDrift.calibration), 1);
-      rtc.readnvram(&(rtcDrift.calibration), 1, RTC_DRIFT_CAL);
-      LOG(1, "Updated RTC calibration period: %u days\n", rtcDrift.calibration);
     }
-    rtc.writenvram(RTC_DRIFT_CTL, &ctl, 1);
+    rtc.writenvram(RTC_DRIFT_CTL, &(rtcDrift.control), 1);
     rtc.writenvram(RTC_DRIFT_REG, &(rtcDrift.value), 1);
+
+    // Verify the updated regs
+    LOG(3, "Check RTC drift registers:\n");
+    rtc_drift_read_regs();
   }
 #endif
 }
@@ -395,7 +420,7 @@ bool update_rtc(time_t ntpTime = 0) {
   if (!rtc.isrunning()) {
     DateTime t(F(__DATE__), F(__TIME__));
     saved_time = t.unixtime();
-    rtc.adjust(t);
+    rtc_time_update(t);
     // Reset drift and update saved time
     rtc_drift_reset(saved_time);
   }
@@ -405,7 +430,7 @@ bool update_rtc(time_t ntpTime = 0) {
   DateTime rtc_time = rtc.now();
   rtcTime = rtc_time.unixtime();
   #if RTC_DRIFT_EN
-  rtc.readnvram((u8*)&saved_time, 4, 4);
+  rtc.readnvram((u8*)&saved_time, 4, RTC_DRIFT_ST);
   diff = rtcTime - saved_time;
   #endif
   DateTime last_time(saved_time);
@@ -422,32 +447,21 @@ bool update_rtc(time_t ntpTime = 0) {
       return false;
     }
   } else {
-    rtc_drift_update(rtc_time, ntp_time);
+    rtc_drift_update(rtc_time);
   }
 
   if (ntpTime != 0) {
-    LOG(1, "NTP timestamp: %llu, RTC timestamp: %llu\n", ntpTime, rtcTime);
     LOG(1, "NTP time (%02u/%02u/%u %02u:%02u:%02u) | RTC time (%02u/%02u/%u %02u:%02u:%02u)\n",
           ntp_time.day(), ntp_time.month(), ntp_time.year(), ntp_time.hour(), ntp_time.minute(), ntp_time.second(),
           rtc_time.day(), rtc_time.month(), rtc_time.year(), rtc_time.hour(), rtc_time.minute(), rtc_time.second());
     diff = rtcTime - ntpTime;
     if (abs(diff) > 30) {
       LOG(1, "NTP time differs from RTC time with more than 30s. Adjusting RTC!\n");
-      rtc.adjust(ntp_time);
+      rtc_time_update(ntp_time);
       rtcTime = ntpTime;
-      #if RTC_DRIFT_EN
-      saved_time = ntp_time.unixtime();
-      rtc.writenvram(RTC_DRIFT_ST, (u8*)&saved_time, 4);
-      #endif
     } else {
-      rtc_drift_update(rtc_time, ntp_time, (byte)diff);
+      rtc_drift_update(rtc_time, (byte)diff);
     }
-    
-    // Even though we didn't adjust the RTC, update the rtc_updated time
-    u32 rtc_updated;
-    system_rtc_mem_read(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
-    rtc_updated = (u32)ntpTime;
-    system_rtc_mem_write(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
   }
 
   system_rtc_mem_write(RTC_BLK, &rtcTime, sizeof(rtcTime));
@@ -455,6 +469,7 @@ bool update_rtc(time_t ntpTime = 0) {
   system_rtc_mem_write(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
   
   timeUpdated = true;
+  //rtc_drift_reset((u32)rtcTime); //TODO: debug only!
   return true;
 }
 
@@ -507,13 +522,13 @@ time_t get_time(bool useNtp = false) {
   if (!rtcUptime)
     system_rtc_mem_read(UPTIME_BLK, &rtcUptime, sizeof(rtcUptime));
   u64 uptime = rtcUptime + (millis() - rtcMillis);
-  LOG(3, "Saved NTP/RTC time: %llu -> %s", rtcTime, ctime(&rtcTime));
+  LOG(5, "Saved NTP/RTC time: %llu -> %s", rtcTime, ctime(&rtcTime));
   if (!rtcTime)
     return 0;
   now = rtcTime;
   if (uptime > 1000) {
     now += uptime / 1000;
-    LOG(3, "Updated NTP/RTC time: %llu -> %s", now, ctime(&now));
+    LOG(5, "Updated NTP/RTC time: %llu -> %s", now, ctime(&now));
   }
   
   return now;
@@ -930,7 +945,7 @@ bool check_for_jobs(u64 *timeTillNext = NULL) {
   job_t *job = NULL;
   bool useNtp = (WiFi.status() == WL_CONNECTED);
 
-  if (useNtp && (millis() - rtcMillis) < NTP_REFRESH) 
+  if (haveRTC || (useNtp && (millis() - rtcMillis) < NTP_REFRESH))
     useNtp = false;
     
   now = get_time(useNtp);
@@ -1156,7 +1171,7 @@ void check_battery() {
   }
   
   //LOG(1, "DEBUG: forcing battery to BATTERY_VERY_LOW");
-  //batState = BATTERY_VERY_LOW; // For debugging only
+  //batState = BATTERY_LOW; // For debugging only
   
   digitalWrite(pin_ctrl_stat1, HIGH);
 }

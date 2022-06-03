@@ -32,6 +32,7 @@
 #define GENMASK(h, l) (((1 << ((h) - (l) + 1)) - 1) << (l))
 #define REG_PUT(x, h, l) (((x) << (l)) & GENMASK(h, l))
 #define REG_GET(x, h, l) (((x) & GENMASK(h, l)) >> (l))
+#define REG_UPDATE(reg, val, h, l) ((reg & ~(REG_PUT(~0, h, l))) | REG_PUT(val, h, l))
 
 /* MAGIC_BLK */
 #define MAGIC_GET_ID(x)         REG_GET(x, 31, 16)
