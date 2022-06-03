@@ -1362,6 +1362,10 @@ void setup() {
   }
   state.setState(NO_STATE);
   update_rtc();
+  if (first_boot && haveRTC) {
+    u32 rtc_updated = (u32)rtcTime;
+    system_rtc_mem_write(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
+  }
 
   // Only tested stall current for 0-40 / 140-180, so will use these by now
   if (SERVO_MOVE_FW > 100)
