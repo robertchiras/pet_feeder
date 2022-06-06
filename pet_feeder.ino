@@ -30,7 +30,7 @@ extern "C" {
 #ifdef VERTICAL_FEEDER
 // Vertical feeder: with paddles
 // Forward speed (range: 100-180 for 0% - 100%)
-#define SERVO_MOVE_FW 145
+#define SERVO_MOVE_FW 150
 // Backward speed (range: 0-80 for 100% - 0%)
 #define SERVO_MOVE_BW 0
 #ifdef DOG_FEEDER
@@ -436,6 +436,12 @@ bool update_rtc(time_t ntpTime = 0) {
   #if RTC_DRIFT_EN
   rtc.readnvram((u8*)&saved_time, 4, RTC_DRIFT_ST);
   diff = rtcTime - saved_time;
+  if (ntpTime) {
+    u32 rtc_updated = 0;
+    system_rtc_mem_read(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
+    if (!rtc_updated)
+      system_rtc_mem_write(RTCU_BLK, &saved_time, sizeof(saved_time));
+  }
   #endif
   DateTime last_time(saved_time);
   LOG(1, "RTC date: %02u/%02u/%u %02u:%02u:%02u (Last update: %02u/%02u/%u %02u:%02u:%02u)\n",
@@ -1375,9 +1381,9 @@ void setup() {
   
   // Only tested stall current for 0-40 / 140-180, so will use these by now
   if (SERVO_MOVE_FW > 100)
-    servoStallCurrent = map(SERVO_MOVE_FW, 140, 180, 400, 700);
+    servoStallCurrent = map(SERVO_MOVE_FW, 140, 180, 380, 700);
   else
-    servoStallCurrent = map(SERVO_MOVE_FW, 0, 40, 700, 400);
+    servoStallCurrent = map(SERVO_MOVE_FW, 0, 40, 700, 380);
 
   time_t now = get_time();
   LOG(1, "Wake-ups: %u\n", wakeNum);
@@ -1501,9 +1507,11 @@ void loop() {
       if (haveRTC) {
         u32 rtc_updated = 0;
         system_rtc_mem_read(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
-        u64 diff = rtcTime - rtc_updated;
+        long diff = (u32)rtcTime - rtc_updated;
         if (diff > HOURS(rtcDrift.calibration * 24)) {
-          LOG(2, "RTC last updated %llus ago (RTC calibration: %u days). Updating NTP time to calibrate RTC.\n", diff, rtcDrift.calibration);
+          time_t tu = rtc_updated;
+          LOG(2, "RTC last updated %lds ago: %s", diff, ctime(&tu));
+          LOG(2, "RTC calibration: %u days. Updating NTP time to calibrate RTC.\n", rtcDrift.calibration);
           state.setState(GET_NTP_TIME);
           return;
         }
