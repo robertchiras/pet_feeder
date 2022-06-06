@@ -23,9 +23,10 @@
 #define UPTIME_BLK 184 //184-185 - time elapsed since we got NTP/RTC
 #define MAGIC_BLK 183
 #define RTCU_BLK 182 // last updated RTC time
-#define RUN_BLK 181
-#define STATS_BLK 180
-#define LOWBAT_BLK 179
+#define RTCC_BLK 181 // last wakeup time
+#define RUN_BLK 180
+#define STATS_BLK 179
+#define LOWBAT_BLK 178
 /* END RTC memory defines */
 
 #define BIT(nr) (1 << nr)

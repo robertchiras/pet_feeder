@@ -313,7 +313,7 @@ void rtc_time_update(DateTime t) {
   #endif
 }
 
-void rtc_drift_update(DateTime rtc_time, byte cur_drift = 0) {
+void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) {
 #if RTC_DRIFT_EN
 
   rtc_drift_read_regs();
@@ -352,10 +352,14 @@ void rtc_drift_update(DateTime rtc_time, byte cur_drift = 0) {
   }
 
   if (!rtcDrift.progress) {
+    if (!ntp_time.unixtime()) {
+      LOG(1, "Trying to start RTC drift calculation, but no NTP time!\n");
+      return;
+    }
     TimeSpan ts(BTOI(cur_drift));
     rtc_time = rtc_time - ts;
     rtcTime = rtc_time.unixtime();
-    rtc_time_update(rtc_time);
+    rtc_time_update(ntp_time);
     rtcDrift.progress++;
     rtcDrift.control = REG_UPDATE(rtcDrift.control, rtcDrift.progress, 3, 1);
     rtc.writenvram(RTC_DRIFT_CTL, &(rtcDrift.control), 1);
@@ -368,7 +372,7 @@ void rtc_drift_update(DateTime rtc_time, byte cur_drift = 0) {
         rtc_time.day(), rtc_time.month(), rtc_time.year(),
         rtc_time.hour(), rtc_time.minute(), rtc_time.second());
     
-    rtcDrift.value += (cur_drift - rtcDrift.value) / (rtcDrift.progress + 1);
+    rtcDrift.value += (cur_drift - rtcDrift.value) / rtcDrift.progress;
     rtcDrift.progress++;
     LOG(1, "Current RTC drift: %ds (progress: %u, updated drift: %ds)\n", BTOI(cur_drift), rtcDrift.progress, BTOI(rtcDrift.value));
     
@@ -434,11 +438,17 @@ bool update_rtc(time_t ntpTime = 0) {
   diff = rtcTime - saved_time;
   #endif
   DateTime last_time(saved_time);
-  LOG(1, "RTC date: %02u/%02u/%u %02u:%02u:%02u (Last saved: %02u/%02u/%u %02u:%02u:%02u)\n",
+  LOG(1, "RTC date: %02u/%02u/%u %02u:%02u:%02u (Last update: %02u/%02u/%u %02u:%02u:%02u)\n",
       rtc_time.day(), rtc_time.month(), rtc_time.year(),
       rtc_time.hour(), rtc_time.minute(), rtc_time.second(),
       last_time.day(), last_time.month(), last_time.year(),
       last_time.hour(), last_time.minute(), last_time.second());
+  time_t last_wake;
+  system_rtc_mem_read(RTC_BLK, &last_wake, sizeof(last_wake));
+  DateTime lw_time((u32)last_wake);
+  LOG(1, "Last wake time: %02u/%02u/%u %02u:%02u:%02u\n",
+      lw_time.day(), lw_time.month(), lw_time.year(),
+      lw_time.hour(), lw_time.minute(), lw_time.second());
   if (saved_time && abs(diff) > HOURS(48)) {
     LOG(1, "Saved time mismatches current time with more than 48h. Requesting time from NTP!\n");
     rtcTime = 0;
@@ -447,7 +457,7 @@ bool update_rtc(time_t ntpTime = 0) {
       return false;
     }
   } else {
-    rtc_drift_update(rtc_time);
+    rtc_drift_update(rtc_time, ntp_time);
   }
 
   if (ntpTime != 0) {
@@ -460,7 +470,7 @@ bool update_rtc(time_t ntpTime = 0) {
       rtc_time_update(ntp_time);
       rtcTime = ntpTime;
     } else {
-      rtc_drift_update(rtc_time, (byte)diff);
+      rtc_drift_update(rtc_time, ntp_time, (byte)diff);
     }
   }
 
@@ -1362,11 +1372,7 @@ void setup() {
   }
   state.setState(NO_STATE);
   update_rtc();
-  if (first_boot && haveRTC) {
-    u32 rtc_updated = (u32)rtcTime;
-    system_rtc_mem_write(RTCU_BLK, &rtc_updated, sizeof(rtc_updated));
-  }
-
+  
   // Only tested stall current for 0-40 / 140-180, so will use these by now
   if (SERVO_MOVE_FW > 100)
     servoStallCurrent = map(SERVO_MOVE_FW, 140, 180, 400, 700);
