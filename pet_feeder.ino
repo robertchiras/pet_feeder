@@ -461,12 +461,6 @@ bool update_rtc(time_t ntpTime = 0) {
       rtc_time.hour(), rtc_time.minute(), rtc_time.second(),
       last_time.day(), last_time.month(), last_time.year(),
       last_time.hour(), last_time.minute(), last_time.second());
-  time_t last_wake;
-  system_rtc_mem_read(RTC_BLK, &last_wake, sizeof(last_wake));
-  DateTime lw_time((u32)last_wake);
-  LOG(1, "Last wake time: %02u/%02u/%u %02u:%02u:%02u\n",
-      lw_time.day(), lw_time.month(), lw_time.year(),
-      lw_time.hour(), lw_time.minute(), lw_time.second());
   if (saved_time && abs(diff) > HOURS(48)) {
     LOG(1, "Saved time mismatches current time with more than 48h. Requesting time from NTP!\n");
     rtcTime = 0;
@@ -1235,10 +1229,12 @@ void do_warn_blink() {
     
     case WARN_SERVO_STALL:
       num_blinks = 3;
+      del = BLINK * 2;
     break;
     
     case WARN_DROP:
       num_blinks = 4;
+      del = BLINK * 2;
     break;
   }
 
@@ -1380,6 +1376,11 @@ void setup() {
   haveRTC = rtcmem_get_rtc();
   haveScale = rtcmem_get_scale();
   rtcmem_set_magic(RUN_MAGIC_ID);
+
+  time_t last_wake;
+  system_rtc_mem_read(RTC_BLK, &last_wake, sizeof(last_wake));
+  DateTime lw_time((u32)last_wake);
+  LOG(1, "Last wake-up: %s", ctime(&last_wake));
 
   if (reset_ntp && !haveRTC) {
     // Since we crashed, we need to start over with NTP time
@@ -1590,7 +1591,7 @@ void loop() {
       peakCurrent = 0;
       servoStallNum = 0;
       
-      if (servoDropNum > 10) {
+      if (servoDropNum >= 8) {
         LOG(1, "Warning level activated: WARN_DROP! (total drops: %u)\n", servoDropNum);
         warnState = WARN_DROP;
         state.setState(RUN_IDLE);
