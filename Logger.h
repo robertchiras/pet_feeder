@@ -5,7 +5,7 @@
 
 #pragma once
 
-#define LOG_LEVEL 3
+#define LOG_LEVEL 2
 #define RAM_LOG
 #define LOG_BUF_SIZE 4096
 #define LOG(lvl, ...) Logger::log(lvl, __VA_ARGS__)

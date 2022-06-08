@@ -69,6 +69,9 @@ extern "C" {
 //#define SLEEP_SECS    60 // for deep-sleep debugging
 #define MODEM_SLEEP 1
 
+#define BLINK 100
+#define QBLINK 75
+
 bool haveScale = false;
 bool haveRTC = false;
 u16 wakeNum = 0; // number of wake-ups since power-on
@@ -175,13 +178,20 @@ typedef enum {
 } SleepType;
 
 typedef enum {
-  BATTERY_UNKNOWN,
   BATTERY_ABSENT,
-  BATTERY_GOOD,
-  BATTERY_LOW,
-  BATTERY_VERY_LOW,
+  BATTERY_PRESENT_1x,
+  BATTERY_PRESENT_2x,
 } BatteryState;
-BatteryState batState = BATTERY_UNKNOWN;
+BatteryState batState = BATTERY_ABSENT;
+
+typedef enum {
+  WARN_NONE = 0,
+  WARN_BAT_LOW,       // Warning for low voltage battery
+  WARN_BAT_VERY_LOW,  // Warning for very-low voltage battery
+  WARN_SERVO_STALL,   // Warning for continuous servo stall
+  WARN_DROP,          // Warning for food-drop issues (not enough food in bowl?)
+} WarnState;
+WarnState warnState = WARN_NONE;
 u64 lastBatRead = 0; // millis timestamp of last battery voltage reading
 
 #define MAX_JOBS 6 // up to 6 feeds per day
@@ -217,6 +227,8 @@ u8 stallCheckNum;
 u16 peakCurrent;
 // Stall current in mili-amps (this will be smaller for smaller angular speeds)
 u16 servoStallCurrent = 700;
+u8 servoStallNum;
+u8 servoDropNum;
 
 // job trigger informatio
 typedef enum {
@@ -298,7 +310,7 @@ void rtc_drift_read_regs() {
   LOG(3, "RTC drift value: 0x%02X (%ds)\n", rtcDrift.value, BTOI(rtcDrift.value));
   LOG(3, "RTC drift calibration: 0x%02X (%dd)\n", rtcDrift.calibration, rtcDrift.calibration);
   DateTime lu_time(rtcDrift.last_update);
-  LOG(1, "RTC drift last_update: %02u/%02u/%u %02u:%02u:%02u\n",
+  LOG(3, "RTC drift last_update: %02u/%02u/%u %02u:%02u:%02u\n",
         lu_time.day(), lu_time.month(), lu_time.year(),
         lu_time.hour(), lu_time.minute(), lu_time.second());
 }
@@ -397,8 +409,8 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
     rtc.writenvram(RTC_DRIFT_REG, &(rtcDrift.value), 1);
 
     // Verify the updated regs
-    LOG(3, "Check RTC drift registers:\n");
-    rtc_drift_read_regs();
+    //LOG(3, "Check RTC drift registers:\n");
+    //rtc_drift_read_regs();
   }
 #endif
 }
@@ -955,7 +967,11 @@ bool wifi_config(int mode) {
 }
 
 #define FEED_25G MAP_GRAMS(25)
-bool check_for_jobs(u64 *timeTillNext = NULL) {   
+bool check_for_jobs(u64 *timeTillNext = NULL) {
+  // Nothing to do if the WARN_DROP has not been cleared.
+  if (warnState == WARN_DROP)
+    return false;
+    
   time_t now;
   struct tm *t;
   job_t *job = NULL;
@@ -1016,6 +1032,7 @@ bool check_for_jobs(u64 *timeTillNext = NULL) {
   lastRun = thisRun;
   jobGrams = job->grams;
   rtcmem_set_lastRun(lastRun);
+  servoDropNum = 0;
   state.setState({START_SERVO, MAP_GRAMS(job->grams)});
   return true;
 }
@@ -1084,15 +1101,13 @@ void enter_sleep() {
   rtcmem_set_magic(MAGIC_ID);
   LOG(1, "Entering sleep for %llu seconds (%d)\n", (sleep_now / 1000000), wakeNum);
   delay(10);
-  if (batState == BATTERY_LOW ||
-      batState == BATTERY_VERY_LOW) {
+  if (warnState != WARN_NONE) {
     /* 
      * Prepare the system for deep-sleep for sleep_now microseconds, but with intermitent 
-     * wakeups once every 3 seconds.
+     * wakeups once every 3 seconds. Maximum sleep time allowed: 8191 seconds
      */
     u16 sleep_secs = (sleep_now / 1000000);
-    if (batState == BATTERY_VERY_LOW)
-      sleep_secs |= 0x8000;
+    sleep_secs = REG_UPDATE(sleep_secs, (u8)warnState, 15, 13);
     rtcmem_set_lpsleep_id(MAGIC_ID);
     rtcmem_set_lpsleep_secs(sleep_secs);
     
@@ -1160,34 +1175,31 @@ void check_battery() {
   LOG(1, "Battery mV: %u\n", bat_mV);
   if (bat_mV >= 2500 && bat_mV < 4500) {
     // We have 1x18650
+    batState = BATTERY_PRESENT_1x;
     if (bat_mV < 3000) {
       LOG(1, "1x battery present and very low (%umV)\n", bat_mV);
-      batState = BATTERY_VERY_LOW;
+      warnState = WARN_BAT_VERY_LOW;
     } else if (bat_mV < 3200) {
       LOG(1, "1x battery present and low (%umV)\n", bat_mV);
-      batState = BATTERY_LOW;
+      warnState = WARN_BAT_LOW;
     } else {
       LOG(1, "1x battery present and in good shape (%umV)\n", bat_mV);
-      batState = BATTERY_GOOD;
     }
   } else if (bat_mV >= 5500) {
     // We have 2x18650
+    batState = BATTERY_PRESENT_2x;
     if (bat_mV < 6200) {
       LOG(1, "2x battery present and very low (%umV)\n", bat_mV);
-      batState = BATTERY_VERY_LOW;
+      warnState = WARN_BAT_VERY_LOW;
     } else if (bat_mV < 6500) {
       LOG(1, "2x battery present and low (%umV)\n", bat_mV);
-      batState = BATTERY_LOW;
+      warnState = WARN_BAT_LOW;
     } else {
       LOG(1, "2x battery present and in good shape (%umV)\n", bat_mV);
-      batState = BATTERY_GOOD;
     }
   } else {
     batState = BATTERY_ABSENT;
   }
-  
-  //LOG(1, "DEBUG: forcing battery to BATTERY_VERY_LOW");
-  //batState = BATTERY_LOW; // For debugging only
   
   digitalWrite(pin_ctrl_stat1, HIGH);
 }
@@ -1207,25 +1219,44 @@ void reset_i2c() {
   rtcmem_set_i2c_reset(true);
 }
 
-void do_lowbat_sleep(bool bat_very_low, u16 sleep_secs) {
-  u8 num_blinks = 2;
-  u8 del = 100;
+void do_warn_blink() {
+  u8 num_blinks = 1;
+  u8 del = BLINK;
   
-  if (bat_very_low) {
-    num_blinks = 4;
-    del = 75;
+  switch(warnState) {
+    case WARN_BAT_LOW:
+      num_blinks = 2;
+    break;
+    
+    case WARN_BAT_VERY_LOW:
+      num_blinks = 4;
+      del = QBLINK;
+    break;
+    
+    case WARN_SERVO_STALL:
+      num_blinks = 3;
+    break;
+    
+    case WARN_DROP:
+      num_blinks = 4;
+    break;
   }
+
   for (u8 i = 0; i < num_blinks; i++) {
     digitalWrite(pin_led_status, HIGH);
     delay(del);
     digitalWrite(pin_led_status, LOW);
     delay(del);
-  }
+  }  
+}
+
+void do_warn_sleep(u16 sleep_secs) {
+  do_warn_blink();
+  
   if (sleep_secs > 3) {
     sleep_secs -= 3;
     rtcmem_set_lpsleep_id(MAGIC_ID);
-    if (bat_very_low)
-      sleep_secs |= 0x8000;
+    sleep_secs = REG_UPDATE(sleep_secs, (u8)warnState, 15, 13);
     rtcmem_set_lpsleep_secs(sleep_secs);
   } else {
     rtcmem_set_lpsleep_id(0);
@@ -1240,17 +1271,13 @@ void setup() {
   pinMode(pin_btn_control, INPUT);
   pinMode(pin_led_status, OUTPUT);
   bool btn_wake = (digitalRead(pin_btn_control) == LOW);
-  //bool btn_wake = (rtc_info->reason == REASON_EXT_SYS_RST);
 
   if (!btn_wake && rtcmem_get_lpsleep_id() == MAGIC_ID) {
     u16 sleep_secs = rtcmem_get_lpsleep_secs();
-    bool bat_very_low = false;
-    if (sleep_secs & 0x8000) {
-      bat_very_low = true;
-      sleep_secs &= ~(0x8000);
-    }
+    warnState = (WarnState)REG_GET(sleep_secs, 15, 13);
+    sleep_secs = REG_GET(sleep_secs, 12, 0);
     if (sleep_secs > 0)
-      do_lowbat_sleep(bat_very_low, sleep_secs);
+      do_warn_sleep(sleep_secs);
   }
 
   u32 magic_id;
@@ -1417,6 +1444,9 @@ void setup() {
 
   if (gData.corrupted || !strlen(gData.wifi_ssid) || !strlen(gData.wifi_pass))
     state.setState(CONFIGURE);
+
+  //LOG(1, "DEBUG: forcing battery to BATTERY_VERY_LOW");
+  //warnState = WARN_DROP; // For debugging only
 }
 
 void loop() {
@@ -1431,7 +1461,9 @@ void loop() {
       if (getAction(button, BTN_ACT_PRESSED)) {
           startTrigger = JOB_TRIGGER_BUTTON;
           jobGrams = 0;
-          state.setState({START_SERVO, 0});;
+          servoDropNum = 0;
+          warnState = WARN_NONE;
+          state.setState({START_SERVO, 0});
           return;
       }
       if (getAction(button, BTN_ACT_SINGLE_TAP)) {
@@ -1446,9 +1478,8 @@ void loop() {
         state.setState(BEGIN_OTA);
         return;
       }
-      digitalWrite(pin_led_status, HIGH);
-      delay(100);
-      digitalWrite(pin_led_status, LOW);
+      
+      do_warn_blink();
       wifi_set_sleep_type(LIGHT_SLEEP_T);
       delay(3000);
       return;
@@ -1456,6 +1487,8 @@ void loop() {
     case WAKE_UP:
       if (getAction(button, BTN_ACT_PRESSED)) {
         startTrigger = JOB_TRIGGER_BUTTON;
+        servoDropNum = 0;
+        warnState = WARN_NONE;
         state.setState({START_SERVO, 0});
         return;
       }
@@ -1486,6 +1519,8 @@ void loop() {
         if (digitalRead(pin_btn_control) == LOW) {
           setButtonAction(button, BTN_ACT_PRESSED);
           startTrigger = JOB_TRIGGER_BUTTON;
+          servoDropNum = 0;
+          warnState = WARN_NONE;
           if (haveRTC)
             state.setState({START_SERVO, 0});
           else
@@ -1520,6 +1555,8 @@ void loop() {
         return;
       if (getAction(button, BTN_ACT_PRESSED)) {
         startTrigger = JOB_TRIGGER_BUTTON;
+        servoDropNum = 0;
+        warnState = WARN_NONE;
         state.setState({START_SERVO, 0});
         return;
       }
@@ -1549,12 +1586,21 @@ void loop() {
       digitalWrite(pin_ctrl_stat1, HIGH);
       digitalWrite(pin_ctrl_stat2, HIGH);
       
-      LOG(1, "Starting servo\n");
-      servo.attach(pin_ctrl_servo);
       lastTurnMillis = lastStallMillis = lastStartMillis = stallCheckNum = 0;
       peakCurrent = 0;
+      servoStallNum = 0;
+      
+      if (servoDropNum > 10) {
+        LOG(1, "Warning level activated: WARN_DROP! (total drops: %u)\n", servoDropNum);
+        warnState = WARN_DROP;
+        state.setState(RUN_IDLE);
+        return;
+      }
+      servoDropNum++;
       lastRunTime = get_time();
       state.setState({RUN_SERVO, state.getWaitTime()});
+      LOG(1, "Starting servo\n");
+      servo.attach(pin_ctrl_servo);
       lastRunMillis = millis();
       servo.write(SERVO_MOVE_FW);
       return;
@@ -1575,16 +1621,15 @@ void loop() {
           
         if (stallCheckNum > 2) {
           stallCheckNum = 0;
+          servoStallNum++;
+          lastStartMillis = lastStallMillis = currentMillis;
           if (servo.read() == SERVO_MOVE_FW) {
             LOG(1, "Servo stall detected in FW direction!\n");
-            lastStartMillis = currentMillis;
             servo.write(SERVO_MOVE_BW);
           } else {
             LOG(1, "Servo stall detected in BW direction!\n");
-            lastStartMillis = currentMillis;
             servo.write(SERVO_MOVE_FW);
           }
-          lastStallMillis = currentMillis;
         }
         
         if (lastStallMillis && currentMillis - lastStallMillis > 500) {
@@ -1614,7 +1659,13 @@ void loop() {
 #endif
         
         stopTrigger = JOB_TRIGGER_NONE;
-        if ((servo.read() == SERVO_MOVE_FW) && state.expired()) {
+        if (startTrigger == JOB_TRIGGER_AUTO && servoStallNum > 10) {
+          lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
+          LOG(1, "Stopping servo (servo stall exceeded): total run: %u ms, peak current: %u mA\n", lastRunDuration, peakCurrent);
+          LOG(1, "Warning level activated: WARN_SERVO_STALL! (total stalls: %u)\n", servoStallNum);
+          warnState = WARN_SERVO_STALL;
+          stopTrigger = JOB_TRIGGER_AUTO;
+        } else if ((servo.read() == SERVO_MOVE_FW) && state.expired()) {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
           LOG(1, "Stopping servo (state expired): total run: %u ms, peak current: %u mA\n", lastRunDuration, peakCurrent);
           stopTrigger = JOB_TRIGGER_AUTO;

@@ -23,10 +23,10 @@
 #define UPTIME_BLK 184 //184-185 - time elapsed since we got NTP/RTC
 #define MAGIC_BLK 183
 #define RTCU_BLK 182 // last updated RTC time
-#define RTCC_BLK 181 // last wakeup time
+#define RTCC_BLK 181 // not used
 #define RUN_BLK 180
 #define STATS_BLK 179
-#define LOWBAT_BLK 178
+#define WARN_BLK 178
 /* END RTC memory defines */
 
 #define BIT(nr) (1 << nr)
@@ -125,11 +125,11 @@ void rtcmem_set_byte(u8 blk, u8 id, u8 b) {
 #define rtcmem_get_magic() rtcmem_get_u16(MAGIC_BLK, 2)
 #define rtcmem_set_magic(v) rtcmem_set_u16(MAGIC_BLK, v, 2)
 
-// LOW_BAT_BLK
-#define rtcmem_get_lpsleep_id() rtcmem_get_u16(LOWBAT_BLK, 2)
-#define rtcmem_set_lpsleep_id(v) rtcmem_set_u16(LOWBAT_BLK, v, 2)
-#define rtcmem_get_lpsleep_secs() rtcmem_get_u16(LOWBAT_BLK, 0)
-#define rtcmem_set_lpsleep_secs(v) rtcmem_set_u16(LOWBAT_BLK, v, 0)
+// WARN_BLK
+#define rtcmem_get_lpsleep_id() rtcmem_get_u16(WARN_BLK, 2)
+#define rtcmem_set_lpsleep_id(v) rtcmem_set_u16(WARN_BLK, v, 2)
+#define rtcmem_get_lpsleep_secs() rtcmem_get_u16(WARN_BLK, 0)
+#define rtcmem_set_lpsleep_secs(v) rtcmem_set_u16(WARN_BLK, v, 0)
 
 /* GET/SET a bit inside the MAGIC_ID block */
 bool magic_get_bit(u8 b) {
