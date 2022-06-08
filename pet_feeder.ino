@@ -1213,11 +1213,14 @@ void reset_i2c() {
   rtcmem_set_i2c_reset(true);
 }
 
-void do_warn_blink() {
+void do_warn_blink(WarnState st = WARN_NONE) {
   u8 num_blinks = 1;
   u8 del = BLINK;
-  
-  switch(warnState) {
+
+  if (st == WARN_NONE)
+    st = warnState;
+    
+  switch(st) {
     case WARN_BAT_LOW:
       num_blinks = 2;
     break;
@@ -1689,6 +1692,11 @@ void loop() {
             LOG(1, "Scale read: %.2fg\n", w);
             scale.power_down();
             gr = round(w + 0.49);
+            if (stopTrigger == JOB_TRIGGER_BUTTON &&
+                lastRunDuration > MAP_GRAMS(5) &&
+                MAP_GRAMS(gr) < (lastRunDuration - MAP_GRAMS(2))) {
+              do_warn_blink(WARN_DROP);
+            }
           } else {
             jobGrams = 0;
           }
