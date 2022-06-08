@@ -178,11 +178,13 @@ typedef enum {
 } SleepType;
 
 typedef enum {
+  BATTERY_UNKNOWN,
   BATTERY_ABSENT,
   BATTERY_PRESENT_1x,
   BATTERY_PRESENT_2x,
 } BatteryState;
-BatteryState batState = BATTERY_ABSENT;
+BatteryState batState = BATTERY_UNKNOWN;
+u64 lastBatRead = 0; // millis timestamp of last battery voltage reading
 
 typedef enum {
   WARN_NONE = 0,
@@ -192,7 +194,6 @@ typedef enum {
   WARN_DROP,          // Warning for food-drop issues (not enough food in bowl?)
 } WarnState;
 WarnState warnState = WARN_NONE;
-u64 lastBatRead = 0; // millis timestamp of last battery voltage reading
 
 #define MAX_JOBS 6 // up to 6 feeds per day
 /* Global data structure to hold what we need in flash memory */
