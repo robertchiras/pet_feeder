@@ -21,39 +21,33 @@ extern "C" {
 #include "user_interface.h"
 }
 
-#define DOG_FEEDER
-#define VERTICAL_FEEDER
+//#define DOG_FEEDER
+//#define VERTICAL_FEEDER
+#define CAT_FEEDER
 
 #define BACKWARD_ROTATE 0
 #define SERVO_STOP 90
 
-#ifdef VERTICAL_FEEDER
-// Vertical feeder: with paddles
-// Forward speed (range: 100-180 for 0% - 100%)
-#define SERVO_MOVE_FW 150
-// Backward speed (range: 0-80 for 100% - 0%)
-#define SERVO_MOVE_BW 0
-#ifdef DOG_FEEDER
-#define GRT (60)
-#elif CAT_FEEDER
-// Not tested yet!
-#define GRT (220)
-#else
-#define GRT (220)
-#endif
-#else
-// Horizontal feeder: with auger
-// Forward speed (range: 0 - 80 for 100% - 0%)
-#define SERVO_MOVE_FW 0
-// Backward speed (range: 100 - 180 for 0% - 100%)
-#define SERVO_MOVE_BW 180
-#ifdef DOG_FEEDER
-#define GRT (45)
-#elif CAT_FEEDER
-#define GRT (220)
-#else
-#define GRT (220)
-#endif
+#if defined(VERTICAL_FEEDER) // Vertical feeder: with paddles
+  #define SERVO_MOVE_FW 150 // Forward speed (range: 100-180 for 0% - 100%)
+  #define SERVO_MOVE_BW 0 // Backward speed (range: 0-80 for 100% - 0%)
+  #if defined(DOG_FEEDER)
+    #define GRT (60)
+  #elif defined(CAT_FEEDER)
+    #define GRT (220) // Not tested yet!
+  #else
+    #define GRT (220)
+  #endif
+#else // Horizontal feeder: with auger
+  #define SERVO_MOVE_FW 0 // Forward speed (range: 0 - 80 for 100% - 0%)
+  #define SERVO_MOVE_BW 180 // Backward speed (range: 100 - 180 for 0% - 100%)
+  #if defined(DOG_FEEDER)
+    #define GRT (45)
+  #elif defined(CAT_FEEDER)
+    #define GRT (220)
+  #else
+    #define GRT (220)
+  #endif
 #endif
 
 #define MAP_GRAMS(g) ((GRT + gData.calibration) * g)
@@ -337,8 +331,7 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
   }
 
   int diff = rtcTime - rtcDrift.last_update;
-  if (rtcTime - rtcDrift.last_update < HOURS(rtcDrift.calibration * 24)) {
-  //if (rtcTime - rtcDrift.last_update < 60) {
+  if (rtcTime - rtcDrift.last_update < HOURS(24)) {
     LOG(3, "RTC drift: not enough hours passed to calculate RTC drift (actual seconds: %u)\n", diff);
     return;
   }
