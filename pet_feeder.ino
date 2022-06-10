@@ -1051,11 +1051,16 @@ void enter_sleep() {
   u64 sleep_now;
   if (gData.sleep_type == LIGHT_SLEEP) {
     do_light_sleep();
+    // Disable the RST mux, so the button won't reset us
+    digitalWrite(pin_ctrl_mux, HIGH);
     return;
   }
 
-  if (gData.sleep_type != DEEP_SLEEP)
+  if (gData.sleep_type != DEEP_SLEEP) {
+    // Disable the RST mux, so the button won't reset us
+    digitalWrite(pin_ctrl_mux, HIGH);
     return;
+  }
 
   sleep_now = SLEEP_SECS;
   u64 time_till_next;
@@ -1286,8 +1291,13 @@ void setup() {
   /* 
    * Put the mux pin to H in order to disable the RST mux while awake.
    * This will prevent resetting us while pressing the button.
+   * Put the pin to H only if we are woken up by button. If the wake-up
+   * is because of deep-sleep process, just leave this pin LOW, so that
+   * the attached relay to this pin won't go ON and OFF every time we
+   * wake up from deep-sleep
    */
-  digitalWrite(pin_ctrl_mux, HIGH);
+  if (btn_wake)
+    digitalWrite(pin_ctrl_mux, HIGH);
   
   // put your setup code here, to run once:
   Serial.begin(115200);
@@ -1583,6 +1593,9 @@ void loop() {
       // Prepare stat pins for stall detection
       digitalWrite(pin_ctrl_stat1, HIGH);
       digitalWrite(pin_ctrl_stat2, HIGH);
+
+      // Make sure the relay is ON
+      digitalWrite(pin_ctrl_mux, HIGH);
       
       lastTurnMillis = lastStallMillis = lastStartMillis = stallCheckNum = 0;
       peakCurrent = 0;
