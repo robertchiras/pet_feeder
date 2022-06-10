@@ -1581,6 +1581,11 @@ void loop() {
     case START_SERVO:
       LOG(1, "Preparing servo\n");
       wifi_disconnect();
+
+      // Make sure the relay is ON
+      digitalWrite(pin_ctrl_mux, HIGH);
+      delay(15);
+      
       if (haveScale) {
         LOG(1, "Powering scale\n");
         reset_i2c();
@@ -1593,9 +1598,6 @@ void loop() {
       // Prepare stat pins for stall detection
       digitalWrite(pin_ctrl_stat1, HIGH);
       digitalWrite(pin_ctrl_stat2, HIGH);
-
-      // Make sure the relay is ON
-      digitalWrite(pin_ctrl_mux, HIGH);
       
       lastTurnMillis = lastStallMillis = lastStartMillis = stallCheckNum = 0;
       peakCurrent = 0;
