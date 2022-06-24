@@ -21,8 +21,8 @@ extern "C" {
 #include "user_interface.h"
 }
 
-//#define DOG_FEEDER
-//#define VERTICAL_FEEDER
+#define DOG_FEEDER
+#define VERTICAL_FEEDER
 #define CAT_FEEDER
 
 #define BACKWARD_ROTATE 0
@@ -344,6 +344,7 @@ void rtc_time_update(DateTime t, bool fromNTP = false) {
 
 void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) {
 #if RTC_DRIFT_EN
+  bool from_ntp = (ntp_time.unixtime() > 0);
   rtc_drift_read_regs();
   if (REG_GET(rtcDrift.control, 7, 4) != 0xA || !rtcDrift.last_update) {
     rtc_drift_reset();
@@ -367,7 +368,7 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
   if (rtcDrift.enabled) {
     TimeSpan ts(BTOI(rtcDrift.value));
     rtc_time = rtc_time - ts;
-    rtc_time_update(rtc_time, (ntp_time.unixtime() > 0));
+    rtc_time_update(rtc_time, from_ntp);
     rtcTime = rtc_time.unixtime();
     LOG(1, "Updated RTC time with drift of: %ds: %02u/%02u/%u %02u:%02u:%02u\n", BTOI(rtcDrift.value),
         rtc_time.day(), rtc_time.month(), rtc_time.year(),
@@ -380,6 +381,9 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
     rtc.writenvram(RTC_DRIFT_CAL, &(rtcDrift.calibration), 1);
     LOG(1, "Updated RTC drift calibration period: %u days\n", rtcDrift.calibration);
   }
+
+  if (!from_ntp)
+    return;
 
   if (!rtcDrift.progress) {
     if (!ntp_time.unixtime()) {
@@ -396,7 +400,7 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
     LOG(1, "Starting RTC drift calculation: %02u/%02u/%u %02u:%02u:%02u\n",
       rtc_time.day(), rtc_time.month(), rtc_time.year(),
       rtc_time.hour(), rtc_time.minute(), rtc_time.second());
-  } else if (rtcDrift.progress < 5 && cur_drift) {
+  } else if (rtcDrift.progress < 5) {
     DateTime last_tm(rtcDrift.last_update);   
     LOG(1, "Saved RTC drift: %ds (last check: %02u/%02u/%u %02u:%02u:%02u)\n", BTOI(rtcDrift.value),
         rtc_time.day(), rtc_time.month(), rtc_time.year(),
@@ -409,7 +413,7 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
     TimeSpan ts(BTOI(rtcDrift.value));
     rtc_time = rtc_time - ts;
     rtcTime = rtc_time.unixtime();
-    rtc_time_update(rtc_time);
+    rtc_time_update(rtc_time, true);
     LOG(1, "RTC date with drift (%d secs, %u drift checks): %02u/%02u/%u %02u:%02u:%02u\n",
       ts.totalseconds(),
       rtcDrift.progress,
@@ -457,7 +461,7 @@ bool update_rtc(time_t ntpTime = 0) {
     #ifndef RTC_DRIFT_EN
     rtc_time_update(ntp_time, true);
     #endif
-    rtc_drift_update(rtc_time, ntp_time, 0);
+    rtc_drift_update(rtc_time, ntp_time);
   }
 
   rtcMillis = millis();
