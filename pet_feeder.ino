@@ -967,6 +967,7 @@ bool wifi_config(int mode) {
   server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
     request->send_P(200, "text/html", index_html, html_processor);
   });
+
   server.on("/reset-drift", HTTP_GET, [](AsyncWebServerRequest *request) {
     if (haveRTC) {
       rtc_connect();
@@ -976,6 +977,14 @@ bool wifi_config(int mode) {
       request->send(200, "text/html", "RTC not present!");
     }
   });
+
+  server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request) {
+    memset(&gData, 0, sizeof(gData));
+    gData.dirty = true;
+    save_flash();
+    request->send(200, "text/html", "All saved data erased! Reboot to reconfigure...");
+  });
+
   server.on("/config", handleConfig);
   server.on("/status", handleStatus);
   server.onNotFound(handleNotFound);

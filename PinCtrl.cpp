@@ -230,7 +230,7 @@ void PinControl::run() {
  * 1 blink, long pause (1s total):
  * 2 blinks, long pause (1s total): needs configuration (wifi cannot connect)
  * 3 blinks, long pause (1.5s total): button pressed, waiting for release
- * short fast blink: pump is running
+ * short fast blink: job is running
  * long slow blink: wifi connection in progress
  * short slow blink: waiting for NTP response
  * slowly dimming up&down: in OTA mode
@@ -433,12 +433,19 @@ void setButtonAction(ButtonManager *btn, ButtonAction action) {
 
 bool waitForButtonAction(ButtonManager *btn, ButtonAction action) {
   u16 mDelay = 0;
-  while (btn->lastAction == action && mDelay <= FLIP_DELAY) {
+  while ((btn->lastAction == action || btn->bounceAction == action) &&
+         mDelay <= FLIP_DELAY) {
       delay(10);
       mDelay += 10;
+      // If button bouncced, reset to last action
+      if (btn->bounceAction != BTN_ACT_UNDEFINED &&
+          millis() - btn->lastTrigger > MIN_DELAY) {
+            btn->lastAction = btn->bounceAction;
+            btn->bounceAction = BTN_ACT_UNDEFINED;
+          }
   }
 
-  return (mDelay >= FLIP_DELAY);
+  return (mDelay >= FLIP_DELAY && (btn->lastAction == action || btn->bounceAction == action));
 }
 
 bool getAction(ButtonManager *btn, ButtonAction action) {
