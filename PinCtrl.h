@@ -156,6 +156,7 @@ typedef struct button_manager {
   u64 lastTrigger;
   u8 prevState;
   u8 curState;
+  PinControl *pinCtrl;  
 } ButtonManager;
 
 u8 getPinState(u8 pin);
@@ -166,7 +167,8 @@ ICACHE_RAM_ATTR void checkButtonState_1();
 ButtonAction getButtonAction(ButtonManager *btn);
 void setButtonAction(ButtonManager *btn, ButtonAction action);
 bool getAction(ButtonManager *btn, ButtonAction action);
-ButtonManager *installButton(u8 pin, ButtonType type, ButtonPull pull = BTN_PULLDOWN);
+ButtonAction getAction(ButtonManager *btn);
+ButtonManager *installButton(u8 pin, ButtonType type, PinControl *pinCtrl = NULL, ButtonPull pull = BTN_PULLDOWN);
 void unInstallButton(ButtonManager *btn);
 /* END button management */
 

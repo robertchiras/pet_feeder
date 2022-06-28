@@ -1345,7 +1345,7 @@ void setup() {
   LOG(1, "\nSetup (rst reason: %d)\n", rtc_info->reason);
   LOG(1, "Button wake: %u\n", btn_wake);
 
-  button = installButton(pin_btn_control, BTN_TYPE_MOMENTARY, BTN_PULLUP);
+  button = installButton(pin_btn_control, BTN_TYPE_MOMENTARY, &pinCtrl, BTN_PULLUP);
   if (!button) {
     LOG(1, "Could not install button!!!\n");  
     delay(5000);
@@ -1500,6 +1500,7 @@ void setup() {
 
 void loop() {
   pinCtrl.run();
+  ButtonAction action = getAction(button);
 
   switch (state.getState()) {
     case SLEEPING:
@@ -1507,23 +1508,21 @@ void loop() {
       check_battery();
       if (check_for_jobs())
         return;
-      if (getAction(button, BTN_ACT_PRESSED)) {
+      if (action == BTN_ACT_PRESSED) {
           startTrigger = JOB_TRIGGER_BUTTON;
           jobGrams = 0;
           servoDropNum = 0;
           warnState = WARN_NONE;
           state.setState({START_SERVO, 0});
           return;
-      }
-      if (getAction(button, BTN_ACT_SINGLE_TAP)) {
+      } else if (action == BTN_ACT_SINGLE_TAP) {
         #if MODEM_SLEEP
         WiFi.forceSleepWake();
         delay(10);
         #endif
         state.setState({WAKE_UP, 300000});
         return;
-      }
-      if (getAction(button, BTN_ACT_DOUBLE_TAP)) {
+      } else if (action == BTN_ACT_DOUBLE_TAP) {
         state.setState(BEGIN_OTA);
         return;
       }
@@ -1534,33 +1533,33 @@ void loop() {
       return;
       
     case WAKE_UP:
-      if (getAction(button, BTN_ACT_PRESSED)) {
+      if (action == BTN_ACT_PRESSED) {
         startTrigger = JOB_TRIGGER_BUTTON;
         servoDropNum = 0;
         warnState = WARN_NONE;
         state.setState({START_SERVO, 0});
         return;
-      }
-      if (getAction(button, BTN_ACT_SINGLE_TAP)) {
+      } else if (action == BTN_ACT_SINGLE_TAP) {
         state.setState(RUN_IDLE);
         return;
-      }
-      if (getAction(button, BTN_ACT_SINGLE_TAP_ON)) {
+      } else if (action == BTN_ACT_SINGLE_TAP_ON) {
         state.setState({PUSH_BUTTON, 2000}, {RUN_IDLE, 0}, {CONFIGURE, 0});
         return;
-      }
-      if (getAction(button, BTN_ACT_DOUBLE_TAP)) {
+      } else if (action == BTN_ACT_DOUBLE_TAP) {
         state.setState(BEGIN_OTA);
         return;
       }
+
       if (state.expired()) {
         state.setState(RUN_IDLE);
         return;
       }
+
       if (WiFi.status() != WL_CONNECTED) {
         wifi_connect();
         state.setState({WIFI_CONNECT, WIFI_TIMEOUT * 1000}, {WAKE_UP, state.getWaitTime()}, {RUN_IDLE, 0});
       }
+
       return;
 
     case BTN_WAKE_UP:
@@ -1598,23 +1597,24 @@ void loop() {
           return;
         }
       }
+
       if (check_for_jobs())
         return;
-      if (getAction(button, BTN_ACT_PRESSED)) {
+        
+      if (action == BTN_ACT_PRESSED) {
         startTrigger = JOB_TRIGGER_BUTTON;
         servoDropNum = 0;
         warnState = WARN_NONE;
         state.setState({START_SERVO, 0});
         return;
-      }
-      if (getAction(button, BTN_ACT_SINGLE_TAP_ON)) {
+      } else if (action == BTN_ACT_SINGLE_TAP_ON) {
         state.setState({PUSH_BUTTON, 2000}, {RUN_IDLE, 0}, {CONFIGURE, 0});
         return;
-      }
-      if (getAction(button, BTN_ACT_DOUBLE_TAP)) {
+      } else if (action == BTN_ACT_DOUBLE_TAP) {
         state.setState(BEGIN_OTA);
         return;
       }
+
       break;
       
     case START_SERVO:
@@ -1723,7 +1723,7 @@ void loop() {
           stopTrigger = JOB_TRIGGER_AUTO;
         } else if (!state.getWaitTime() &&
                    startTrigger == JOB_TRIGGER_BUTTON &&
-                   (getAction(button, BTN_ACT_RELEASED) || !buttonPressed(button))) {
+                   (action == BTN_ACT_RELEASED || !buttonPressed(button))) {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
           LOG(1, "Stopping servo (push button): total run: %u ms, peak current: %u mA\n", lastRunDuration, peakCurrent);
           stopTrigger = JOB_TRIGGER_BUTTON;
@@ -1767,7 +1767,7 @@ void loop() {
     case PUSH_BUTTON:
       if (state.expired())
         state.setFailed();
-      else if (getAction(button, BTN_ACT_RELEASED))
+      else if (action == BTN_ACT_RELEASED)
         state.setSuccess();
       return;
 
@@ -1781,11 +1781,12 @@ void loop() {
       
     case CONFIGURING:
       {
-        if (getAction(button, BTN_ACT_DOUBLE_TAP)) {
+        if (action == BTN_ACT_DOUBLE_TAP) {
           wifi_disconnect();
           state.setState(RUN_IDLE);
           return;
         }
+
         WiFiMode_t wifi_mode = WiFi.getMode();
         switch (wifi_mode) {
           case WIFI_AP:
@@ -1936,7 +1937,7 @@ void loop() {
       
     case OTA_UPDATE:
       ArduinoOTA.handle();
-      if (getAction(button, BTN_ACT_DOUBLE_TAP)) {
+      if (action == BTN_ACT_DOUBLE_TAP) {
         delay(1000);
         state.setState(RUN_IDLE);
       }
