@@ -440,9 +440,11 @@ bool waitForButtonAction(ButtonManager *btn, ButtonAction action) {
       // If button bouncced, reset to last action
       if (btn->bounceAction != BTN_ACT_UNDEFINED &&
           millis() - btn->lastTrigger > MIN_DELAY) {
-            btn->lastAction = btn->bounceAction;
-            btn->bounceAction = BTN_ACT_UNDEFINED;
-          }
+          btn->lastAction = btn->bounceAction;
+          btn->bounceAction = BTN_ACT_UNDEFINED;
+      }
+      if (btn->pinCtrl)
+        btn->pinCtrl->run();
   }
 
   return (mDelay >= FLIP_DELAY && (btn->lastAction == action || btn->bounceAction == action));
@@ -475,7 +477,35 @@ bool getAction(ButtonManager *btn, ButtonAction action) {
   return false;
 }
 
-ButtonManager *installButton(u8 pin, ButtonType type, ButtonPull pull) {
+ButtonAction getAction(ButtonManager *btn) {
+  ButtonAction action;
+
+  if (btn->type == BTN_TYPE_LOCKING)
+    return getButtonAction(btn);
+
+  if (!waitForButtonAction(btn, BTN_ACT_PRESSED))
+    if (!waitForButtonAction(btn, BTN_ACT_SINGLE_TAP))
+      if (!waitForButtonAction(btn, BTN_ACT_SINGLE_TAP_ON))
+        waitForButtonAction(btn, BTN_ACT_DOUBLE_TAP);
+  
+  if ((action = getButtonAction(btn)) != BTN_ACT_UNDEFINED) {
+    String actionName;
+    
+    switch (action) {
+      case BTN_ACT_PRESSED: actionName = "PRESSED"; break;
+      case BTN_ACT_RELEASED: actionName = "RELEASED"; break;
+      case BTN_ACT_SINGLE_TAP: actionName = "SINGLE_TAP"; break;
+      case BTN_ACT_SINGLE_TAP_ON: actionName = "BTN_ACT_SINGLE_TAP_ON"; break;
+      case BTN_ACT_DOUBLE_TAP: actionName = "DOUBLE_TAP"; break;
+    }
+    LOG(1, "Button action detected: %s\n", actionName);
+    setButtonAction(btn, BTN_ACT_UNDEFINED);
+  }
+
+  return action;
+}
+
+ButtonManager *installButton(u8 pin, ButtonType type, PinControl *pinCtrl, ButtonPull pull) {
   ButtonManager *button;
   u8 id;
   for (id = 0; id < MAX_BUTTONS; id++) {
@@ -491,6 +521,7 @@ ButtonManager *installButton(u8 pin, ButtonType type, ButtonPull pull) {
   button->pin = pin;
   button->curState = digitalRead(pin);
   button->bounceAction = BTN_ACT_UNDEFINED;
+  button->pinCtrl = pinCtrl;
   
   switch (id) {
     case 0:
@@ -510,5 +541,6 @@ void unInstallButton(ButtonManager *btn) {
  detachInterrupt(digitalPinToInterrupt(btn->pin));
  btn->pin = 0;
  btn->curState = BTN_ACT_UNDEFINED;
+ btn->pinCtrl = NULL;
 }
 /* END Button Management */
