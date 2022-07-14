@@ -22,11 +22,9 @@
 #define RTC_BLK 186 // 186-187 - time obtained from NTP/RTC
 #define UPTIME_BLK 184 //184-185 - time elapsed since we got NTP/RTC
 #define MAGIC_BLK 183
-#define RTCU_BLK 182 // not used
-#define RTCC_BLK 181 // not used
-#define RUN_BLK 180
-#define STATS_BLK 179
-#define WARN_BLK 178
+#define RUN_BLK 182
+#define STATS_BLK 181
+#define WARN_BLK 180
 /* END RTC memory defines */
 
 #define BIT(nr) (1 << nr)

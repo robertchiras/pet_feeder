@@ -21,8 +21,8 @@ extern "C" {
 #include "user_interface.h"
 }
 
-#define DOG_FEEDER
-#define VERTICAL_FEEDER
+//#define DOG_FEEDER
+//#define VERTICAL_FEEDER
 #define CAT_FEEDER
 
 #define BACKWARD_ROTATE 0
@@ -58,7 +58,7 @@ extern "C" {
 
 #define BTOI(b) ((b & 0x80)?((UINT_MAX << 8) | (int)b):(int)b)
 
-#define WIFI_TIMEOUT  30
+#define WIFI_TIMEOUT  10
 #define SLEEP_SECS    HOURS(2)
 //#define SLEEP_SECS    60 // for deep-sleep debugging
 #define MODEM_SLEEP 1
@@ -89,6 +89,7 @@ u16 crashNum = 0; // number of crashes since power-on
 #define RTC_DRIFT_CAL   2
 #define RTC_DRIFT_ST    4 // holds a 32 bit on 4-7
 #define RTC_NTP_UPDATE  8 // holds a 32 bit on 8-11
+#define RTC_DEFAULT_DRIFT 6 // in seconds per day
 
 typedef struct {
   bool enabled;
@@ -101,6 +102,7 @@ typedef struct {
 } TimeDrift;
 
 u8 ntpFail = 0;  // number of failed NTP queries
+u8 wifiFail = 0; // number of failed WiFi connect retries
 bool timeUpdated = false; // indicator that the current time has been updated, either from RTC or NTP
 u64 rtcMillis; // Elapsed millis from boot until we got the actual time
 u64 rtcUptime; // Elapsed millis since we got time from NTP or RTC
@@ -154,6 +156,9 @@ NTPClient timeClient(ntpUDP);
 
 #define host_name "config.info"
 #define MYSSID "Pet Feeder"
+
+#define NO_WIFI_ID "[NO_NETWORK]"
+#define NO_WIFI (!strcmp(gData.wifi_ssid, NO_WIFI_ID))
 
 String *ssidNames; // place-holder for SSID scan results
 u8 ssidNum; // number of scanned SSIDs
@@ -297,13 +302,19 @@ bool rtc_connect() {
   return true;
 }
 
-void rtc_drift_reset(u32 t = 0) {
+void rtc_drift_reset(u32 t = 0, bool force = false) {
 #if RTC_DRIFT_EN  
   LOG(1, "Resetting RTC drift regs\n");
-  u8 val = 0;
-  rtc.writenvram(RTC_DRIFT_CTL, &val, 1);
-  rtc.writenvram(RTC_DRIFT_REG, &val, 1);
-  rtc.writenvram(RTC_DRIFT_CAL, &val, 1);
+  memset(&rtcDrift, 0, sizeof(rtcDrift));
+  if (force) {
+    rtcDrift.control = REG_PUT(0xA, 7, 4);
+    rtcDrift.control |= BIT(0);
+    rtcDrift.calibration = 30;
+    rtcDrift.value = RTC_DEFAULT_DRIFT;
+  }
+  rtc.writenvram(RTC_DRIFT_CTL, &(rtcDrift.control), 1);
+  rtc.writenvram(RTC_DRIFT_REG, &(rtcDrift.value), 1);
+  rtc.writenvram(RTC_DRIFT_CAL, &(rtcDrift.calibration), 1);
   rtc.writenvram(RTC_DRIFT_ST, (u8*)&t, 4);
   rtc.writenvram(RTC_NTP_UPDATE, (u8*)&t, 4);
 #endif  
@@ -385,6 +396,9 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
   if (!from_ntp)
     return;
 
+  if (!cur_drift)
+      cur_drift = rtc_time.unixtime() - ntp_time.unixtime();
+
   if (!rtcDrift.progress) {
     if (!ntp_time.unixtime()) {
       LOG(1, "Trying to start RTC drift calculation, but no NTP time!\n");
@@ -398,10 +412,10 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
     rtcDrift.control = REG_UPDATE(rtcDrift.control, rtcDrift.progress, 3, 1);
     rtc.writenvram(RTC_DRIFT_CTL, &(rtcDrift.control), 1);
     LOG(1, "Starting RTC drift calculation: %02u/%02u/%u %02u:%02u:%02u\n",
-      rtc_time.day(), rtc_time.month(), rtc_time.year(),
-      rtc_time.hour(), rtc_time.minute(), rtc_time.second());
+      ntp_time.day(), ntp_time.month(), ntp_time.year(),
+      ntp_time.hour(), ntp_time.minute(), ntp_time.second());
   } else if (rtcDrift.progress < 5) {
-    DateTime last_tm(rtcDrift.last_update);   
+    DateTime last_tm(rtcDrift.last_update);
     LOG(1, "Saved RTC drift: %ds (last check: %02u/%02u/%u %02u:%02u:%02u)\n", BTOI(rtcDrift.value),
         rtc_time.day(), rtc_time.month(), rtc_time.year(),
         rtc_time.hour(), rtc_time.minute(), rtc_time.second());
@@ -437,11 +451,9 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
 #endif
 }
 
-bool update_rtc(time_t ntpTime = 0) {
+bool update_rtc(time_t ntpTime = 0, bool fromClient = false) {
   u32 saved_time = 0;
   long long diff = 0;
-  
-  rtcTime = 0;
   
   if (!haveRTC)
     return false;
@@ -449,19 +461,24 @@ bool update_rtc(time_t ntpTime = 0) {
   if (!rtc_connect())
     return false;
 
-  DateTime ntp_time((u32)ntpTime);
+  rtcTime = 0;
+
+  //DateTime ntp_time((u32)ntpTime);
+  struct tm *t = localtime(&ntpTime);
+  DateTime ntp_time(t->tm_year - 100, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
   DateTime rtc_time;
   
-  if (!rtc.isrunning()) {
+  if (!rtc.isrunning() || fromClient) {
     if (!ntpTime) {
       state.setState(GET_NTP_TIME);
       return false;
     }
-    rtc_drift_reset();
+    rtc_drift_reset(ntpTime, fromClient);
     #ifndef RTC_DRIFT_EN
     rtc_time_update(ntp_time, true);
     #endif
-    rtc_drift_update(rtc_time, ntp_time);
+    if (!fromClient)
+      rtc_drift_update(rtc_time, ntp_time);
   }
 
   rtcMillis = millis();
@@ -477,7 +494,7 @@ bool update_rtc(time_t ntpTime = 0) {
       rtc_time.hour(), rtc_time.minute(), rtc_time.second(),
       last_time.day(), last_time.month(), last_time.year(),
       last_time.hour(), last_time.minute(), last_time.second());
-  if ((!saved_time && !ntpTime) || (saved_time && abs(diff) > HOURS(48))) {
+  if (!NO_WIFI && ((!saved_time && !ntpTime) || (saved_time && abs(diff) > HOURS(48)))) {
     LOG(1, "Saved time mismatches current time with more than 48h. Requesting time from NTP!\n");
     rtcTime = 0;
     if (!ntpTime) {
@@ -492,7 +509,7 @@ bool update_rtc(time_t ntpTime = 0) {
     LOG(1, "NTP time (%02u/%02u/%u %02u:%02u:%02u) | RTC time (%02u/%02u/%u %02u:%02u:%02u)\n",
           ntp_time.day(), ntp_time.month(), ntp_time.year(), ntp_time.hour(), ntp_time.minute(), ntp_time.second(),
           rtc_time.day(), rtc_time.month(), rtc_time.year(), rtc_time.hour(), rtc_time.minute(), rtc_time.second());
-    diff = rtcTime - ntpTime;
+    diff = rtc_time.unixtime() - ntp_time.unixtime();
     if (abs(diff) > 30) {
       LOG(1, "NTP time differs from RTC time with more than 30s. Adjusting RTC!\n");
       rtc_time_update(ntp_time, true);
@@ -664,7 +681,7 @@ void load_flash(bool first_boot = false) {
   if (gData.corrupted)
     return;
   EEPROM.get(0, gData);
-  LOG(1, "Data loaded from flash (saved size: %d, actual size:%d, id:0x%08X)\n", gData.sz, sizeof(gData), gData.id);
+  LOG(4, "Data loaded from flash (saved size: %d, actual size:%d, id:0x%08X)\n", gData.sz, sizeof(gData), gData.id);
   if (gData.sz != sizeof(gData) || gData.id != DATA_CHKSUM) {
     LOG(1, "Flash data corrupted! Resetting data\n");
     memset(&gData, 0, sizeof(gData));
@@ -706,7 +723,11 @@ bool wifi_connect() {
   if (!strlen(gData.wifi_ssid) || !strlen(gData.wifi_pass))
     return false;
 
-  LOG(1, "WiFi connect: SSID=%s PASS=%s\n", gData.wifi_ssid, gData.wifi_pass);
+  LOG(1, "WiFi connect: SSID=%s\n", gData.wifi_ssid);
+
+  if (NO_WIFI)
+    return false;
+
   if (staticIP[0]) {
     IPAddress gateway(staticIP[0], staticIP[1], staticIP[2], 1);
     IPAddress subnet(255, 255, 255, 0);
@@ -755,13 +776,21 @@ void handleConfig(AsyncWebServerRequest *request) {
   String wifi_ssid, wifi_pass;
   u8 sleep_type;
   int lastJobId = -1;
+  time_t cli_date = 0;
 
   load_flash();
   for (u8 i = 0; i < request->args(); i++) {
     String argN = request->argName(i);
     String argV = request->arg(i);
-    LOG(1, "argN=%s, argV=%s\n", argN, argV);
-    if (argN == "ssid") {
+    LOG(4, "argN=%s, argV=%s\n", argN, argV);
+    if (argN == "cli_date") {
+      cli_date = (strtoull(argV.c_str(), NULL, 10) / 1000);
+      msg += "<br>Client timestamp: " + argV;
+    } else if (argN == "tm_zone") {
+      if (cli_date > 0)
+        cli_date -= (argV.toInt() * 60);
+      msg += "<br>Client time zone: " + argV + " minutes";
+    } else if (argN == "ssid") {
       wifi_ssid = argV;
     } else if (argN == "pass") {
       wifi_pass = argV;
@@ -819,7 +848,12 @@ void handleConfig(AsyncWebServerRequest *request) {
     for (int i = lastJobId + 1; i < MAX_JOBS; i++)
       gData.jobs[i] = {0, 0, 0};
 
-  if ((wifi_ssid == "" || wifi_pass == "") && !strlen(gData.wifi_ssid)) {
+  if (cli_date > 0) {
+    LOG(1, "Client timestamp: %llu -> %s\n", cli_date, ctime(&cli_date));
+    msg += "<br>Client date: " + String(ctime(&cli_date));
+  }
+
+  if (wifi_ssid == "" && wifi_pass == "" && !strlen(gData.wifi_ssid)) {
     html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head><body>";
     html += "<h2 style=\"font-size: 1.4rem\">";
     html += "WiFi network name and/or pass not provided!";
@@ -835,8 +869,13 @@ void handleConfig(AsyncWebServerRequest *request) {
     memset(gData.wifi_pass, 0, sizeof(gData.wifi_pass));
     wifi_pass.toCharArray(gData.wifi_pass, wifi_pass.length() + 1);
     gData.dirty = true;
-    msg += "WiFi network saved as: " + wifi_ssid + "<br>";
-    state.setState(WIFI_TEST);
+    if (NO_WIFI) {
+      msg += "<br>Saving configuration as: NO_WIFI";
+      update_rtc(cli_date, true);
+    } else {
+      msg += "<br>WiFi network saved as: " + wifi_ssid;
+      state.setState(WIFI_TEST);
+    }
   }
   
   if (sleep_type != 0 && sleep_type != gData.sleep_type) {
@@ -930,23 +969,26 @@ bool wifi_config(int mode) {
   if (mode == WIFI_AP) {
     LOG(1, "Starting WiFi scan...\n");
     ssidNum = WiFi.scanNetworks(false, false);
-    
-    if (ssidNum == 0) {
+
+    if (ssidNum < 0)
+      LOG(1, "WiFi scan error: %d\n", ssidNum);
+      
+    ssidNum++;
+    if (ssidNum == 1)
       LOG(1, "No networks found!\n");
-      return false;
-    } else if (ssidNum > 0) {
+    else
       LOG(1, "%d networks found\n", ssidNum);
-      ssidNames = new String[ssidNum];
-      for (int8_t i = 0; i < ssidNum; i++) {
-        ssidNames[i] = WiFi.SSID(i);
-        ssidNames[i].trim();
-        if (ssidNames[i].length() > 2)
-          LOG(1, "%02d: SSID: %s\n", i, ssidNames[i]);
+      
+    ssidNames = new String[ssidNum];
+    for (int8_t i = 0; i < ssidNum; i++) {
+      if (!i) {
+        ssidNames[i] = String(NO_WIFI_ID);
+        continue;
       }
-   
-    } else {
-      LOG(1, "WiFi scan error %d\n", ssidNum);
-      return false;
+      ssidNames[i] = WiFi.SSID(i);
+      ssidNames[i].trim();
+      if (ssidNames[i].length() > 2)
+        LOG(1, "%02d: SSID: %s\n", i, ssidNames[i]);
     }
     
     LOG(1, "Setting soft-AP %s ...\n", MYSSID);
@@ -1461,7 +1503,9 @@ void setup() {
   else
     servoStallCurrent = map(SERVO_MOVE_FW, 0, 40, 700, 380);
 
-  time_t now = get_time();
+  if (!haveRTC)
+    get_time();
+    
   LOG(1, "Wake-ups: %u\n", wakeNum);
   LOG(1, "Crashes: %u\n", crashNum);
   LOG(1, "Initialized: %d\n", gData.initialized);
@@ -1473,14 +1517,15 @@ void setup() {
   LOG(1, "NTP/RTC time: %llu -> %s", rtcTime, ctime(&rtcTime));
   LOG(1, "Servo stall current: %u\n", servoStallCurrent);
   LOG(1, "Last Run: %02u:%02u\n", lastRun.hh, lastRun.mm);
-  LOG(1, "WiFi config: SSID=%s PASS=%s\n", gData.wifi_ssid, gData.wifi_pass);
+  LOG(1, "WiFi config: SSID=%s\n", gData.wifi_ssid);
   for (int i = 0; i < MAX_JOBS; i++) {
     job_t *job = &gData.jobs[i];
     if (job->grams)
       LOG(1, "Active job: %02u:%02u, grams: %u\n", job->hh, job->mm, job->grams);
   }
 
-  timeClient.begin();
+  if (!NO_WIFI)
+    timeClient.begin();
   
   if (btn_wake) {
     LOG(1, "Button wake-up\n");
@@ -1491,7 +1536,7 @@ void setup() {
     state.setState(RUN_IDLE);
   }
 
-  if (gData.corrupted || !strlen(gData.wifi_ssid) || !strlen(gData.wifi_pass))
+  if (gData.corrupted || !strlen(gData.wifi_ssid))
     state.setState(CONFIGURE);
 
   //LOG(1, "DEBUG: forcing battery to BATTERY_VERY_LOW");
@@ -1556,8 +1601,10 @@ void loop() {
       }
 
       if (WiFi.status() != WL_CONNECTED) {
-        wifi_connect();
-        state.setState({WIFI_CONNECT, WIFI_TIMEOUT * 1000}, {WAKE_UP, state.getWaitTime()}, {RUN_IDLE, 0});
+        if (wifi_connect())
+          state.setState({WIFI_CONNECT, WIFI_TIMEOUT * 1000}, {WAKE_UP, state.getWaitTime()}, {RUN_IDLE, 0});
+        else if (NO_WIFI)
+          state.setState(CONFIGURE);
       }
 
       return;
@@ -1711,13 +1758,16 @@ void loop() {
 #endif
         
         stopTrigger = JOB_TRIGGER_NONE;
+        /*
         if (startTrigger == JOB_TRIGGER_AUTO && servoStallNum > 10) {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
           LOG(1, "Stopping servo (servo stall exceeded): total run: %u ms, peak current: %u mA\n", lastRunDuration, peakCurrent);
           LOG(1, "Warning level activated: WARN_SERVO_STALL! (total stalls: %u)\n", servoStallNum);
           warnState = WARN_SERVO_STALL;
           stopTrigger = JOB_TRIGGER_AUTO;
-        } else if ((servo.read() == SERVO_MOVE_FW) && state.expired()) {
+        } else 
+        */
+        if ((servo.read() == SERVO_MOVE_FW) && state.expired()) {
           lastRunDuration = (currentMillis - lastRunMillis) - state.getExtraTime();
           LOG(1, "Stopping servo (state expired): total run: %u ms, peak current: %u mA\n", lastRunDuration, peakCurrent);
           stopTrigger = JOB_TRIGGER_AUTO;
@@ -1787,6 +1837,11 @@ void loop() {
           return;
         }
 
+        if (NO_WIFI && action == BTN_ACT_SINGLE_TAP) {
+          state.setState(RUN_IDLE);
+          return;
+        }
+
         WiFiMode_t wifi_mode = WiFi.getMode();
         switch (wifi_mode) {
           case WIFI_AP:
@@ -1803,7 +1858,10 @@ void loop() {
     case CONFIGURED:
       LOG(1, "Testing WiFi params succeded!\n");
       save_flash();
-      state.setState(GET_NTP_TIME);
+      if (!NO_WIFI)
+        state.setState(GET_NTP_TIME);
+      else
+        state.setState(RUN_IDLE);
       break;
       
     case WIFI_TEST:
@@ -1818,6 +1876,7 @@ void loop() {
       
     case WIFI_CONNECT:
       if (WiFi.status() == WL_CONNECTED) {
+        wifiFail = 0;
         u32 elapsed = state.getElapsed();
         staticIP = WiFi.localIP();
         LOG(1, "Connected to: %s (after %.02f seconds)\n", WiFi.SSID(), (double)elapsed / 1000);
@@ -1827,17 +1886,17 @@ void loop() {
           delete[] ssidNames;
           ssidNum = 0;
         }
-        // since we are connected to wifi, update rtcTime
-        //time_t now = get_time(true);
-        //LOG(1, "Current NTP time: %llu -> %s", now, ctime(&now));
+        
         wifi_config(WIFI_STA);
         state.setSuccess();
-      } else if (WiFi.status() == WL_WRONG_PASSWORD || WiFi.status() == WL_NO_SSID_AVAIL) { 
+      } else if (WiFi.status() == WL_WRONG_PASSWORD || WiFi.status() == WL_NO_SSID_AVAIL) {
+        wifiFail++;
         LOG(1, "WiFi config is wrong! (invalid SSID or PASS)\n");
         // Re-configure failed, reload the flash contents
         load_flash();
         state.setFailed();
       } else if (state.expired()) {
+        wifiFail++;
         LOG(1, "WiFi connect timed-out!\n");
         // Re-configure failed, reload the flash contents
         load_flash();
@@ -1846,7 +1905,7 @@ void loop() {
       return;
 
     case GET_NTP_TIME:
-      if (WiFi.status() != WL_CONNECTED) {
+      if (WiFi.status() != WL_CONNECTED && !NO_WIFI && wifiFail < 3) {
         time_t now = get_time();
         if (now && ntpFail++ > 2) {
           LOG(1, "NTP time sync failed, using estimate: %s\n", ctime(&now));
@@ -1857,12 +1916,16 @@ void loop() {
         if (wifi_connect()) {
           state.setState({WIFI_CONNECT, WIFI_TIMEOUT * 1000}, {GET_NTP_TIME, 0}, {GET_NTP_TIME, 0});
           return;
-        } else {
-          state.setState(CONFIGURE);
-          return;
         }
+        
+        if (!NO_WIFI)
+          state.setState(CONFIGURE);
+        else if (!state.setNextState())
+          state.setState(RUN_IDLE);
+          
+        return;
       }
-      if (!get_time(true)) {
+      if (!get_time(!NO_WIFI)) {
         time_t now = get_time();
         if (now && ntpFail++ > 2) {
           LOG(1, "NTP time sync failed, using estimate: %s\n", ctime(&now));
@@ -1894,9 +1957,14 @@ void loop() {
       }
 
     case BEGIN_OTA:
+      if (NO_WIFI) {
+        LOG(1, "OTA not possible without WIFI network configured!\n");
+        state.setState(RUN_IDLE);
+        return;
+      }
       if (WiFi.status() != WL_CONNECTED) {
-        wifi_connect();
-        state.setState({WIFI_CONNECT, WIFI_TIMEOUT * 1000}, {BEGIN_OTA, 0}, {RUN_IDLE, 0});
+        if (wifi_connect())
+          state.setState({WIFI_CONNECT, WIFI_TIMEOUT * 1000}, {BEGIN_OTA, 0}, {RUN_IDLE, 0});
         return;
       }
       ArduinoOTA.onStart([]() {

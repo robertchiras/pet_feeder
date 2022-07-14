@@ -28,9 +28,11 @@ const char index_html[] PROGMEM = R"rawliteral(
 <body>
   <h2>Pet Feeder</h2>
   %DATE%
-  <p class="time">Uptime: %DD%days %HH%:%MM%:%SS%</p>
+  <p class="time">Uptime: %DD%days %HH%:%MM%:%SS%</p>n
   <p class="cfg"><input type="button" id="btn" onclick="hide_unhide()" value="%HIDE_BTN%"></p>
-  <form class="cfg" id="configure" action="/config">
+  <form class="cfg" id="configure" action="/config" onsubmit="do_submit();">
+  <input type="hidden" id="cli_date" name="cli_date" value="0"/>
+  <input type="hidden" id="tm_zone" name="tm_zone" value="0"/>
   <div class="cfg" id="wifi"%HIDE_WIFI_CFG%>
   <label class="cat">Select Network: </label><br>
   <select class="cat" name="ssid">
@@ -71,9 +73,16 @@ const char index_html[] PROGMEM = R"rawliteral(
    drop:<input type="text" class="txt" name="gr5" id="gr5" value="%GR5%" maxlength="3" size="1"> grams<br>
   </div>
   <br>
-  <input class="opt" type="submit" value="Submit">
+  <input class="opt" type="submit" name="Submit">
   </form>
   <script>
+  function do_submit() {
+    var now = Date.now();
+    var date = new Date();
+    document.getElementById("cli_date").value = now;
+    document.getElementById("tm_zone").value = date.getTimezoneOffset();
+    return true;
+  }
   function update_cal(obj) {
     var x = document.getElementById("calV");
     if (x)
