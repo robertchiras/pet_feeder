@@ -648,7 +648,7 @@ String html_processor(const String& var) {
     u8 id = var[var.length() - 1] - '0';
     if (id < MAX_JOBS) {
       job_t *job = &gData.jobs[id];
-      if (job->grams)
+      if (job->hh || job->mm)
         ret = "block";
       else
         ret = "none";
@@ -657,7 +657,7 @@ String html_processor(const String& var) {
     u8 id = var[var.length() - 1] - '0';
     if (id < MAX_JOBS) {
       job_t *job = &gData.jobs[id];
-      if (job->grams) {
+      if (job->hh || job->mm) {
         sprintf(c, "%02d", job->hh);
         ret = String(c) + ":";
         sprintf(c, "%02d", job->mm);
@@ -668,8 +668,7 @@ String html_processor(const String& var) {
     u8 id = var[var.length() - 1] - '0';
     if (id < MAX_JOBS) {
       job_t *job = &gData.jobs[id];
-      if (job->grams)
-        ret = String(job->grams);
+      ret = String(job->grams);
     }
   }
   
@@ -823,6 +822,8 @@ void handleConfig(AsyncWebServerRequest *request) {
           if (hh > 23 || mm > 59) {
             msg += "<br>Invalid job time: " + argV;
           } else {
+            if (!hh && !mm)
+             mm = 1;
             gData.jobs[id].hh = hh;
             gData.jobs[id].mm = mm;
             gData.dirty = true;
@@ -1069,19 +1070,20 @@ bool check_for_jobs(u64 *timeTillNext = NULL) {
       continue;
     LOG(4, "Checking job: %02u:%02u, grams: %u\n",
         nextJob->hh, nextJob->mm, nextJob->grams);
-    if (!nextJob->grams || i == MAX_JOBS - 1) {
-      if (lastRun.hh || lastRun.mm) {
-        lastRun = {0, 0};
-        LOG(1, "Resetting lastRun: %02u:%02u\n", lastRun.hh, lastRun.mm);
-        rtcmem_set_lastRun(lastRun);
-      }
+    // If this is the last job in queue, reset lastRun
+    if (((!nextJob->hh && !nextJob->mm) || i == MAX_JOBS - 1) && (lastRun.hh || lastRun.mm)) {
+      lastRun = {0, 0};
+      LOG(1, "Resetting lastRun: %02u:%02u\n", lastRun.hh, lastRun.mm);
+      rtcmem_set_lastRun(lastRun);
+    }
+    if (!nextJob->hh && !nextJob->mm) {
       break;
     } else if (t->tm_hour == nextJob->hh && t->tm_min >= nextJob->mm && t->tm_min - 2 <= nextJob->mm) {
       run_time_t thisRun = { t->tm_hour, t->tm_min };
       job = nextJob;
       LOG(2, "Preparing job: %02u:%02u, grams: %u\n",
           job->hh, job->mm, job->grams);
-      break; 
+      break;
     } else if (timeTillNext) {
       s32 secs = (nextJob->hh - t->tm_hour);
       if (secs < 0)
@@ -1520,7 +1522,7 @@ void setup() {
   LOG(1, "WiFi config: SSID=%s\n", gData.wifi_ssid);
   for (int i = 0; i < MAX_JOBS; i++) {
     job_t *job = &gData.jobs[i];
-    if (job->grams)
+    if (job->hh || job->mm)
       LOG(1, "Active job: %02u:%02u, grams: %u\n", job->hh, job->mm, job->grams);
   }
 
