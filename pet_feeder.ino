@@ -370,14 +370,14 @@ void rtc_drift_update(DateTime rtc_time, DateTime ntp_time, byte cur_drift = 0) 
   }
 
   int diff = rtcTime - rtcDrift.last_update;
-  if (rtcDrift.last_update && rtcTime - rtcDrift.last_update < HOURS(24)) {
+  if (rtcDrift.last_update && diff < HOURS(24)) {
     LOG(3, "RTC drift: not enough hours passed to calculate RTC drift (actual seconds: %u)\n", diff);
     return;
   }
 
   // If drift is already established, update rtcTime
   if (rtcDrift.enabled) {
-    TimeSpan ts(BTOI(rtcDrift.value));
+    TimeSpan ts(BTOI(rtcDrift.value * (diff / HOURS(24))));
     rtc_time = rtc_time - ts;
     rtc_time_update(rtc_time, from_ntp);
     rtcTime = rtc_time.unixtime();
@@ -506,10 +506,11 @@ bool update_rtc(time_t ntpTime = 0, bool fromClient = false) {
   }
 
   if (ntpTime != 0) {
-    LOG(1, "NTP time (%02u/%02u/%u %02u:%02u:%02u) | RTC time (%02u/%02u/%u %02u:%02u:%02u)\n",
-          ntp_time.day(), ntp_time.month(), ntp_time.year(), ntp_time.hour(), ntp_time.minute(), ntp_time.second(),
-          rtc_time.day(), rtc_time.month(), rtc_time.year(), rtc_time.hour(), rtc_time.minute(), rtc_time.second());
     diff = rtc_time.unixtime() - ntp_time.unixtime();
+    LOG(1, "NTP time (%02u/%02u/%u %02u:%02u:%02u) | RTC time (%02u/%02u/%u %02u:%02u:%02u) | diff: %d\n",
+          ntp_time.day(), ntp_time.month(), ntp_time.year(), ntp_time.hour(), ntp_time.minute(), ntp_time.second(),
+          rtc_time.day(), rtc_time.month(), rtc_time.year(), rtc_time.hour(), rtc_time.minute(), rtc_time.second(),
+          diff);
     if (abs(diff) > 30) {
       LOG(1, "NTP time differs from RTC time with more than 30s. Adjusting RTC!\n");
       rtc_time_update(ntp_time, true);
@@ -776,6 +777,7 @@ void handleConfig(AsyncWebServerRequest *request) {
   u8 sleep_type;
   int lastJobId = -1;
   time_t cli_date = 0;
+  bool test_wifi = false;
 
   load_flash();
   for (u8 i = 0; i < request->args(); i++) {
@@ -875,7 +877,7 @@ void handleConfig(AsyncWebServerRequest *request) {
       update_rtc(cli_date, true);
     } else {
       msg += "<br>WiFi network saved as: " + wifi_ssid;
-      state.setState(WIFI_TEST);
+      test_wifi = true;
     }
   }
   
@@ -901,8 +903,6 @@ void handleConfig(AsyncWebServerRequest *request) {
 
   if (msg == "")
     msg = "No changes applied!";
-  else if (state.getState() != WIFI_TEST)
-    state.setState(CONFIGURED);
   html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"></head><body>";
   html += "<h2 style=\"font-size: 1.4rem\">";
   html += msg;
@@ -910,6 +910,13 @@ void handleConfig(AsyncWebServerRequest *request) {
   request->send(200, "text/html", html);
 
   save_flash();
+  // Allow the client to fetch the web page
+  delay(500);
+
+  if (test_wifi)
+    state.setState(WIFI_TEST);
+  else
+    state.setState(CONFIGURED);
 }
 
 void handleStatus(AsyncWebServerRequest *request) {
@@ -1076,15 +1083,22 @@ bool check_for_jobs(u64 *timeTillNext = NULL) {
       LOG(1, "Resetting lastRun: %02u:%02u\n", lastRun.hh, lastRun.mm);
       rtcmem_set_lastRun(lastRun);
     }
-    if (!nextJob->hh && !nextJob->mm) {
+
+    if (!nextJob->grams)
+      continue;
+    
+    if (!nextJob->hh && !nextJob->mm)
       break;
-    } else if (t->tm_hour == nextJob->hh && t->tm_min >= nextJob->mm && t->tm_min - 2 <= nextJob->mm) {
+    
+    if (t->tm_hour == nextJob->hh && t->tm_min >= nextJob->mm && t->tm_min - 2 <= nextJob->mm) {
       run_time_t thisRun = { t->tm_hour, t->tm_min };
       job = nextJob;
       LOG(2, "Preparing job: %02u:%02u, grams: %u\n",
           job->hh, job->mm, job->grams);
       break;
-    } else if (timeTillNext) {
+    }
+    
+    if (timeTillNext) {
       s32 secs = (nextJob->hh - t->tm_hour);
       if (secs < 0)
         secs += 24;
