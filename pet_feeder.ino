@@ -289,6 +289,33 @@ void rtcmem_set_lastRun(const run_time_t &rt) {
 #define rtcmem_get_crashes() rtcmem_get_u16(STATS_BLK, 2)
 #define rtcmem_set_crashes(v) rtcmem_set_u16(STATS_BLK, v, 2)
 
+bool update_dst(time_t *now) {
+  struct tm *t = localtime(now);
+  bool ret = false;
+  
+  if (!dst &&
+    ((t->tm_mon > 2 && t->tm_mon < 9) ||
+    (t->tm_mon == 2 && 31 - t->tm_mday < 7) ||
+    (t->tm_mon == 9 && 31 - t->tm_mday >= 7))) {
+    dst = 1;
+    rtcmem_set_dst(true);
+    *now += 3600;
+    ret = true;
+    LOG(1, "Updating DST to: %u -> %s", dst, ctime(now));
+  } else if (dst &&
+    ((t->tm_mon < 2 && t->tm_mon > 9) ||
+    (t->tm_mon == 2 && 31 - t->tm_mday >= 7) ||
+    (t->tm_mon == 9 && 31 - t->tm_mday < 7))) {
+    dst = 0;
+    rtcmem_set_dst(false);
+    *now -= 3600;
+    ret = false;
+    LOG(1, "Updating DST to: %u -> %s", dst, ctime(now));
+  }
+
+  return ret;
+}
+
 bool rtc_connect() {
   if (rtcmem_get_i2c_reset()) {
     reset_i2c();
@@ -476,14 +503,23 @@ bool update_rtc(time_t ntpTime = 0, bool fromClient = false) {
     rtc_drift_reset(ntpTime, fromClient);
     #ifndef RTC_DRIFT_EN
     rtc_time_update(ntp_time, true);
-    #endif
     if (!fromClient)
       rtc_drift_update(rtc_time, ntp_time);
+    #endif
   }
 
   rtcMillis = millis();
   rtc_time = rtc.now();
-  rtcTime = rtc_time.unixtime();
+  if (!ntpTime) {
+    rtcTime = rtc_time.unixtime();
+    if (update_dst(&rtcTime)) {
+      struct tm *t = localtime(&rtcTime);
+      rtc_time = DateTime(t->tm_year - 100, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
+      LOG(1, "Updating RTC to correct DST setting!\n");
+      rtc_time_update(rtc_time, false);
+      rtc_drift_update(rtc_time, ntp_time);
+    }
+  }
   #if RTC_DRIFT_EN
   rtc.readnvram((u8*)&saved_time, 4, RTC_DRIFT_ST);
   diff = rtcTime - saved_time;
@@ -539,24 +575,7 @@ time_t get_time(bool useNtp = false) {
     if (now > (2021 - 1970) * 365 * HOURS(24)) {
       LOG(1, "Current NTP time: %llu -> %s", now, ctime(&now));
       //check for DST
-      struct tm *t = localtime(&now);
-      if (!dst &&
-          ((t->tm_mon > 2 && t->tm_mon < 9) ||
-          (t->tm_mon == 2 && 31 - t->tm_mday < 7) ||
-          (t->tm_mon == 9 && 31 - t->tm_mday >= 7))) {
-        dst = 1;
-        rtcmem_set_dst(true);
-        now += 3600;
-        LOG(1, "Updating DST to: %u -> %s", dst, ctime(&now));
-      } else if (dst &&
-          ((t->tm_mon < 2 && t->tm_mon > 9) ||
-          (t->tm_mon == 2 && 31 - t->tm_mday >= 7) ||
-          (t->tm_mon == 9 && 31 - t->tm_mday < 7))) {
-        dst = 0;
-        rtcmem_set_dst(false);
-        now -= 3600;
-        LOG(1, "Updating DST to: %u -> %s", dst, ctime(&now));
-      }
+      update_dst(&now);
       if (!haveRTC) {
         // don't have RTC, we rely on NTP
         system_rtc_mem_write(RTC_BLK, &now, sizeof(now));
@@ -1045,7 +1064,7 @@ bool wifi_config(int mode) {
 }
 
 #define FEED_25G MAP_GRAMS(25)
-bool check_for_jobs(u64 *timeTillNext = NULL) {
+bool check_for_jobs(u32 *timeTillNext = NULL) {
   // Nothing to do if the WARN_DROP has not been cleared.
   if (warnState == WARN_DROP)
     return false;
@@ -1161,9 +1180,9 @@ void enter_sleep() {
   }
 
   sleep_now = SLEEP_SECS;
-  u64 time_till_next;
+  u32 time_till_next;
   check_for_jobs(&time_till_next);
-  LOG(1, "Time till next job: %llus, max_sleep: %llus\n", time_till_next, sleep_now);
+  LOG(1, "Time till next job: %us, max_sleep: %llus\n", time_till_next, sleep_now);
   if (time_till_next != UINT_MAX && time_till_next < sleep_now) {
     if (time_till_next > 10)
       sleep_now = time_till_next - 10;
@@ -1204,6 +1223,7 @@ void enter_sleep() {
     
     ESP.deepSleep((3000000 - 10000), WAKE_RF_DEFAULT);
   }
+  
   ESP.deepSleep((sleep_now - 10000), WAKE_RF_DEFAULT);
 }
 
@@ -1291,6 +1311,9 @@ void check_battery() {
   } else {
     batState = BATTERY_ABSENT;
   }
+
+  // For debugging
+  //warnState = WARN_BAT_LOW;
   
   digitalWrite(pin_ctrl_stat1, HIGH);
 }
@@ -1343,22 +1366,31 @@ void do_warn_blink(WarnState st = WARN_NONE) {
     delay(del);
     digitalWrite(pin_led_status, LOW);
     delay(del);
-  }  
+  }
 }
 
 void do_warn_sleep(u16 sleep_secs) {
+  u64 sleep_delay = 4;
   do_warn_blink();
-  
-  if (sleep_secs > 3) {
-    sleep_secs -= 3;
+
+  if (sleep_secs > sleep_delay) {
+    sleep_secs -= sleep_delay;
     rtcmem_set_lpsleep_id(MAGIC_ID);
     sleep_secs = REG_UPDATE(sleep_secs, (u8)warnState, 15, 13);
     rtcmem_set_lpsleep_secs(sleep_secs);
   } else {
     rtcmem_set_lpsleep_id(0);
   }
-  
-  ESP.deepSleep(3000000, WAKE_RF_DEFAULT);
+
+  // Transform to micros
+  sleep_delay *= 1000000;
+
+  /* Seems like the enter sleep and exit sleep process takes about 150ms, so subtract those too.
+   * Actually, we subtract 160ms, because we prefer waking up ahead of the job event instead of 
+   * risking waking up way to late for the job event.
+   */
+  sleep_delay -= (millis() * 1000 + 160000);
+  ESP.deepSleep(sleep_delay, WAKE_RF_DEFAULT);
 }
 
 void setup() {
