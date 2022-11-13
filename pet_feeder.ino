@@ -510,8 +510,8 @@ bool update_rtc(time_t ntpTime = 0, bool fromClient = false) {
 
   rtcMillis = millis();
   rtc_time = rtc.now();
+  rtcTime = rtc_time.unixtime();
   if (!ntpTime) {
-    rtcTime = rtc_time.unixtime();
     if (update_dst(&rtcTime)) {
       struct tm *t = localtime(&rtcTime);
       rtc_time = DateTime(t->tm_year - 100, t->tm_mon + 1, t->tm_mday, t->tm_hour, t->tm_min, t->tm_sec);
@@ -531,7 +531,7 @@ bool update_rtc(time_t ntpTime = 0, bool fromClient = false) {
       last_time.day(), last_time.month(), last_time.year(),
       last_time.hour(), last_time.minute(), last_time.second());
   if (!NO_WIFI && ((!saved_time && !ntpTime) || (saved_time && abs(diff) > HOURS(48)))) {
-    LOG(1, "Saved time mismatches current time with more than 48h. Requesting time from NTP!\n");
+    LOG(1, "Saved time mismatches current time with more than 48h (%lu). Requesting time from NTP!\n", diff);
     rtcTime = 0;
     if (!ntpTime) {
       state.setState(GET_NTP_TIME);
