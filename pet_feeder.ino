@@ -292,25 +292,23 @@ void rtcmem_set_lastRun(const run_time_t &rt) {
 bool update_dst(time_t *now) {
   struct tm *t = localtime(now);
   bool ret = false;
+  u32 rday = 31 - t->tm_mday;
+  u32 cur_dst;
   
-  if (!dst &&
-    ((t->tm_mon > 2 && t->tm_mon < 9) ||
-    (t->tm_mon == 2 && 31 - t->tm_mday < 7) ||
-    (t->tm_mon == 9 && 31 - t->tm_mday >= 7))) {
-    dst = 1;
-    rtcmem_set_dst(true);
-    *now += 3600;
+  if (((t->tm_mon > 2 && t->tm_mon < 9) ||
+    (t->tm_mon == 2 && (rday < 7 && 7 - t->tm_wday > rday)) ||
+    (t->tm_mon == 9 && (rday >= 7 || 7 - t->tm_wday < rday)))) {
+    cur_dst = 1;
+  } else {
+    cur_dst = 0;
+  }
+
+  if (dst != cur_dst) {
+    dst = cur_dst;
+    rtcmem_set_dst(!!dst);
+    *now += (dst)?3600:-3600;
+    LOG(1, "Updating DST to: %u -> %s", dst, ctime(now));
     ret = true;
-    LOG(1, "Updating DST to: %u -> %s", dst, ctime(now));
-  } else if (dst &&
-    ((t->tm_mon < 2 && t->tm_mon > 9) ||
-    (t->tm_mon == 2 && 31 - t->tm_mday >= 7) ||
-    (t->tm_mon == 9 && 31 - t->tm_mday < 7))) {
-    dst = 0;
-    rtcmem_set_dst(false);
-    *now -= 3600;
-    ret = false;
-    LOG(1, "Updating DST to: %u -> %s", dst, ctime(now));
   }
 
   return ret;
