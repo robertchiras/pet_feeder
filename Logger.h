@@ -31,7 +31,7 @@ class Logger {
       return instance;
     }
     
-    static void log(u8 lvl, char *format, ...);
+    static void log(u8 lvl, const char *format, ...);
     static String getLog();
 };
 

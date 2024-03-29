@@ -117,6 +117,8 @@ bool PinControl::startLedDim(const u8 pin, u16 dim_delay) {
   digitalWrite(pin, LOW);
   bitSet(activePins, pin);
   LOG(4, "Starting to dim led %d: [%u, %u, %u]\n", pin, dim_delay, p->off1, p->delay1);
+
+  return true;
 }
 
 bool PinControl::stopLed(const u8 pin, u8 state) {
@@ -297,6 +299,8 @@ bool DeviceState::setSuccess() {
     return false;
 
   setState(stateSuccess);
+
+  return true;
 }
 
 bool DeviceState::setFailed() {
@@ -304,6 +308,8 @@ bool DeviceState::setFailed() {
     return false;
 
   setState(stateFail);
+
+  return true;
 }
 /* END DeviceState */
 

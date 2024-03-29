@@ -27,32 +27,31 @@
 #define WARN_BLK 180
 /* END RTC memory defines */
 
-#define BIT(nr) (1 << nr)
 #define GENMASK(h, l) (((1 << ((h) - (l) + 1)) - 1) << (l))
 #define REG_PUT(x, h, l) (((x) << (l)) & GENMASK(h, l))
 #define REG_GET(x, h, l) (((x) & GENMASK(h, l)) >> (l))
 #define REG_UPDATE(reg, val, h, l) ((reg & ~(REG_PUT(~0, h, l))) | REG_PUT(val, h, l))
-#define REG_GET_BIT(reg, b)     REG_GET(reg, b, b)
-#define REG_SET_BIT(reg, val, b)  ((reg & ~(REG_PUT(~0, b, b)))   | REG_PUT(val, b, b))
+#define REG_G_BIT(reg, b)     REG_GET(reg, b, b)
+#define REG_S_BIT(reg, val, b)  ((reg & ~(REG_PUT(~0, b, b)))   | REG_PUT(val, b, b))
 
 /* MAGIC_BLK */
 #define MAGIC_GET_ID(x)         REG_GET(x, 31, 16)
 #define MAGIC_GET_RESETS(x)     REG_GET(x, 15, 4)
-#define MAGIC_GET_I2C_RESET(x)  REG_GET_BIT(x, 5)
-#define MAGIC_GET_SCALE(x)      REG_GET_BIT(x, 4)
-#define MAGIC_GET_RTC(x)        REG_GET_BIT(x, 3)
-#define MAGIC_GET_DST(x)        REG_GET_BIT(x, 2)
-#define MAGIC_GET_SLEEP(x)      REG_GET_BIT(x, 1)
-#define MAGIC_GET_INIT(x)       REG_GET_BIT(x, 0)
+#define MAGIC_GET_I2C_RESET(x)  REG_G_BIT(x, 5)
+#define MAGIC_GET_SCALE(x)      REG_G_BIT(x, 4)
+#define MAGIC_GET_RTC(x)        REG_G_BIT(x, 3)
+#define MAGIC_GET_DST(x)        REG_G_BIT(x, 2)
+#define MAGIC_GET_SLEEP(x)      REG_G_BIT(x, 1)
+#define MAGIC_GET_INIT(x)       REG_G_BIT(x, 0)
 
 #define MAGIC_SET_ID(x, v)        REG_UPDATE(x, v, 31, 16)
 #define MAGIC_SET_RESETS(x, v)    REG_UPDATE(x, v, 15, 4)
-#define MAGIC_SET_I2C_RESET(x, v) REG_SET_BIT(x, v, 5)
-#define MAGIC_SET_SCALE(x, v)     REG_SET_BIT(x, v, 4)
-#define MAGIC_SET_RTC(x, v)       REG_SET_BIT(x, v, 3)
-#define MAGIC_SET_DST(x, v)       REG_SET_BIT(x, v, 2)
-#define MAGIC_SET_SLEEP(x, v)     REG_SET_BIT(x, v, 1)
-#define MAGIC_SET_INIT(x, v)      REG_SET_BIT(x, v, 0)
+#define MAGIC_SET_I2C_RESET(x, v) REG_S_BIT(x, v, 5)
+#define MAGIC_SET_SCALE(x, v)     REG_S_BIT(x, v, 4)
+#define MAGIC_SET_RTC(x, v)       REG_S_BIT(x, v, 3)
+#define MAGIC_SET_DST(x, v)       REG_S_BIT(x, v, 2)
+#define MAGIC_SET_SLEEP(x, v)     REG_S_BIT(x, v, 1)
+#define MAGIC_SET_INIT(x, v)      REG_S_BIT(x, v, 0)
 
 /* Generic BYTE_BLK */
 #define BYTE_GET_3(x)     REG_GET(x, 31, 24)
@@ -135,13 +134,13 @@ bool magic_get_bit(u8 b) {
   system_rtc_mem_read(MAGIC_BLK, &w_data, sizeof(w_data));
   LOG(4, "magic_get_bit @%u -> w_data: 0x%08X\n", b, w_data);
    
-  return REG_GET_BIT(w_data, b);
+  return REG_G_BIT(w_data, b);
 }
 
 void magic_set_bit(bool v, u8 b) {
   u32 w_data = 0;
   system_rtc_mem_read(MAGIC_BLK, &w_data, sizeof(w_data));
-  w_data = REG_SET_BIT(w_data, !!v, b);
+  w_data = REG_S_BIT(w_data, !!v, b);
   LOG(4, "magic_set_bit(%d@%u) -> w_data: 0x%08X\n", !!v, b, w_data);
   system_rtc_mem_write(MAGIC_BLK, &w_data, sizeof(w_data));
 }

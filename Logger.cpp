@@ -27,7 +27,7 @@ void Logger::doLog(u8 lvl, char *text, u16 len) {
 #endif
 }
 
-void Logger::log(u8 lvl, char *format, ...) {
+void Logger::log(u8 lvl, const char *format, ...) {
   if (lvl > LOG_LEVEL)
     return;
     
