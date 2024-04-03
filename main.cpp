@@ -50,7 +50,7 @@ extern "C" {
   #endif
 #endif
 
-#define MAP_GRAMS(g) ((GRT + gData.calibration) * g)
+#define MAP_GRAMS(g) (u32)((GRT + gData.calibration) * g)
 
 #define HR_SEC        3600
 #define HOURS(x)      ((x) * HR_SEC)
@@ -289,10 +289,25 @@ void rtcmem_set_lastRun(const run_time_t &rt) {
 #define rtcmem_get_crashes() rtcmem_get_u16(STATS_BLK, 2)
 #define rtcmem_set_crashes(v) rtcmem_set_u16(STATS_BLK, v, 2)
 
+void reset_i2c() {
+  LOG(2, "Resetting i2c lines\n");
+  /*
+   * Since we have a non-i2c device (like the HX711 scale controller) on the i2c lines, 
+   * we need to bring the i2c lines in a state where an actual i2c device (like the RTC)
+   * can be accessed. 
+   * Since ESP8266 doesn't have support for Wire::end(), we'll just do it here, manually.
+   */
+  Wire.endTransmission();
+  digitalWrite(I2C_SDA, LOW);
+  digitalWrite(I2C_SCL, LOW);
+  delay(5);
+  rtcmem_set_i2c_reset(true);
+}
+
 bool update_dst(time_t *now) {
   struct tm *t = localtime(now);
   bool ret = false;
-  u32 rday = 31 - t->tm_mday;
+  int rday = 31 - t->tm_mday;
   u32 cur_dst;
   
   if (((t->tm_mon > 2 && t->tm_mon < 9) ||
@@ -609,7 +624,7 @@ time_t get_time(bool useNtp = false) {
 
 String html_processor(const String& var) {
   String ret = "";
-  char c[2];
+  char c[4];
   u32 ss = millis() / 1000;
   u32 mm = ss / 60;
   ss %= 60;
@@ -791,7 +806,7 @@ void handleConfig(AsyncWebServerRequest *request) {
   String msg = "";
   String html;
   String wifi_ssid, wifi_pass;
-  u8 sleep_type;
+  u8 sleep_type = 0;
   int lastJobId = -1;
   time_t cli_date = 0;
   bool test_wifi = false;
@@ -941,8 +956,6 @@ void handleStatus(AsyncWebServerRequest *request) {
   String html;
   char tmp[64];
   time_t now;
-  struct tm *t;
-  char c[2];
   u32 ss = millis() / 1000;
   u32 mm = ss / 60;
   ss %= 60;
@@ -950,10 +963,7 @@ void handleStatus(AsyncWebServerRequest *request) {
   mm %= 60;
   u32 dd = hh / 24;
   hh %= 24;
-  
-  now = get_time();
-  t = localtime(&now);
-  
+    
   html = "<html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">";
   html += "<style>code { display: block;  font-family: monospace;  white-space: pre;  margin: 1em 0;}</style></head><body>";
   html += "<h2 style=\"font-size: 1.2rem\">";
@@ -1084,7 +1094,7 @@ bool check_for_jobs(u32 *timeTillNext = NULL) {
   if (timeTillNext)
     *timeTillNext = UINT_MAX;
   t = localtime(&now);
-  run_time_t thisRun = { t->tm_hour, t->tm_min };
+  run_time_t thisRun = { (u8)t->tm_hour, (u8)t->tm_min };
   LOG(4, "Last run: %02u:%02u, this run: %02u:%02u\n",
     lastRun.hh, lastRun.mm, thisRun.hh, thisRun.mm);
   for (u8 i = 0; i < MAX_JOBS; i++) {
@@ -1108,7 +1118,6 @@ bool check_for_jobs(u32 *timeTillNext = NULL) {
       break;
     
     if (t->tm_hour == nextJob->hh && t->tm_min >= nextJob->mm && t->tm_min - 2 <= nextJob->mm) {
-      run_time_t thisRun = { t->tm_hour, t->tm_min };
       job = nextJob;
       LOG(2, "Preparing job: %02u:%02u, grams: %u\n",
           job->hh, job->mm, job->grams);
@@ -1123,7 +1132,7 @@ bool check_for_jobs(u32 *timeTillNext = NULL) {
       secs += (nextJob->mm - t->tm_min) * 60;
       secs -= t->tm_sec;
       LOG(4, "Time till this job: %us\n", secs);
-      if (!*timeTillNext || secs < *timeTillNext)
+      if (!*timeTillNext || (u32)secs < *timeTillNext)
         *timeTillNext = secs;
     }
   }
@@ -1316,21 +1325,6 @@ void check_battery() {
   digitalWrite(pin_ctrl_stat1, HIGH);
 }
 
-void reset_i2c() {
-  LOG(2, "Resetting i2c lines\n");
-  /*
-   * Since we have a non-i2c device (like the HX711 scale controller) on the i2c lines, 
-   * we need to bring the i2c lines in a state where an actual i2c device (like the RTC)
-   * can be accessed. 
-   * Since ESP8266 doesn't have support for Wire::end(), we'll just do it here, manually.
-   */
-  Wire.endTransmission();
-  digitalWrite(I2C_SDA, LOW);
-  digitalWrite(I2C_SCL, LOW);
-  delay(5);
-  rtcmem_set_i2c_reset(true);
-}
-
 void do_warn_blink(WarnState st = WARN_NONE) {
   u8 num_blinks = 1;
   u8 del = BLINK;
@@ -1356,6 +1350,8 @@ void do_warn_blink(WarnState st = WARN_NONE) {
     case WARN_DROP:
       num_blinks = 4;
       del = BLINK * 2;
+    break;
+    default:
     break;
   }
 
@@ -1828,7 +1824,7 @@ void loop() {
           servo.write(SERVO_STOP);
           servo.detach();
 
-          u8 gr;
+          u8 gr = 0;
           if (haveScale) {
             // Wait a little bit for the grains to settle on the scale
             delay(200);
