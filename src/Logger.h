@@ -17,7 +17,7 @@ class Logger {
     
   protected:
     static Logger *instance;
-    Logger() {}
+    Logger() { memset(logBuf, 0, sizeof(logBuf)); }
     void doLog(u8 lvl, char *text, u16 len);
    
   public:

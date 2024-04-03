@@ -61,7 +61,7 @@ bool PinControl::startLedFlash(const u8 pin, u16 delay1, u8 num1, u16 off1, u16 
   if (!p)
     return false;
     
-  memset(p, 0, sizeof(p));
+  memset(p, 0, sizeof(*p));
   p->pin = pin;
   p->trigger_time = millis();
   
@@ -106,7 +106,7 @@ bool PinControl::startLedDim(const u8 pin, u16 dim_delay) {
   if (!p)
     return false;
     
-  memset(p, 0, sizeof(p));
+  memset(p, 0, sizeof(*p));
   p->pin = pin;
   p->trigger_time = millis();
   p->off1 = dim_delay / 2;
@@ -316,7 +316,7 @@ bool DeviceState::setFailed() {
 /* Button Management */
 ButtonManager buttons[MAX_BUTTONS];
 
-u8 ICACHE_RAM_ATTR getPinState(u8 pin) {
+u8 IRAM_ATTR getPinState(u8 pin) {
   u8 lastState = digitalRead(pin);
   u8 numReads = 0;
   u16 totalDelay = 0;
@@ -350,7 +350,7 @@ bool buttonPressed(ButtonManager *btn, u8 state) {
 #define FLIP_DELAY 400
 #define MIN_DELAY 20
 // Checks if button changed state
-ICACHE_RAM_ATTR void checkButtonState(ButtonManager &btn) {
+IRAM_ATTR void checkButtonState(ButtonManager &btn) {
   if (!btn.pin)
     return;
     
@@ -416,11 +416,11 @@ ICACHE_RAM_ATTR void checkButtonState(ButtonManager &btn) {
   btn.curState = newState;
 }
 
-ICACHE_RAM_ATTR void checkButtonState_0() {
+IRAM_ATTR void checkButtonState_0() {
   return checkButtonState(buttons[0]); 
 }
 
-ICACHE_RAM_ATTR void checkButtonState_1() {
+IRAM_ATTR void checkButtonState_1() {
   return checkButtonState(buttons[1]);
 }
 
@@ -474,6 +474,7 @@ bool getAction(ButtonManager *btn, ButtonAction action) {
       case BTN_ACT_SINGLE_TAP: actionName = "SINGLE_TAP"; break;
       case BTN_ACT_SINGLE_TAP_ON: actionName = "BTN_ACT_SINGLE_TAP_ON"; break;
       case BTN_ACT_DOUBLE_TAP: actionName = "DOUBLE_TAP"; break;
+      default: break;
     }
     LOG(1, "Button action detected: %s\n", actionName);
     setButtonAction(btn, BTN_ACT_UNDEFINED);
@@ -503,6 +504,7 @@ ButtonAction getAction(ButtonManager *btn) {
       case BTN_ACT_SINGLE_TAP: actionName = "SINGLE_TAP"; break;
       case BTN_ACT_SINGLE_TAP_ON: actionName = "BTN_ACT_SINGLE_TAP_ON"; break;
       case BTN_ACT_DOUBLE_TAP: actionName = "DOUBLE_TAP"; break;
+      default: break;
     }
     LOG(1, "Button action detected: %s\n", actionName);
     setButtonAction(btn, BTN_ACT_UNDEFINED);
